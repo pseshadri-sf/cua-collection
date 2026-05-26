@@ -71,21 +71,32 @@ Top toolbar row 1 (y=40):
   move_to action BEFORE pressing those keys.
 
 === STRATEGY A: Part workbench primitive ===
-  Step 1: click workbench selector at (550, 40)         -> dropdown opens
-  Step 2: click "Part" in the dropdown (around (550,200))
-  Step 3: click the Part menu in the menubar at (~220, 10)
-  Step 4: hover "Primitives" submenu, click "Box"        -> box appears
-  Step 5: move cursor to viewport (1100, 540), press "0" then "v","f"
+  Step 1: {{"type":"switch_workbench","name":"Part"}}
+  Step 2: {{"type":"menu_navigate","path":["Part","Primitives","Box"]}}
+  Step 3: {{"type":"focus_viewport"}}     -- transfers keyboard focus to 3D view
+  Step 4: {{"type":"key","key":"0"}}      -- isometric
+  Step 5: {{"type":"key","key":"v"}} then {{"type":"key","key":"f"}}   -- fit all
 
 === STRATEGY B: Python console (most reliable; recommended) ===
-  Step 1: click View menu at (99, 10)                  -> dropdown
-  Step 2: in the View dropdown, hover "Panels"          -> submenu
-  Step 3: click "Python console" in the Panels submenu  -> docked at bottom
-  Step 4: click the console's input field, somewhere around (700, 990)
-  Step 5: type a one-liner. For a box:
+  Step 1: {{"type":"menu_navigate","path":["View","Panels","Python console"]}}
+         -- docks the Python console at the bottom of the window.
+  Step 2: click the console's input field, near (700, 990), to focus it.
+  Step 3: type a single-line Python snippet. For a box:
             doc=App.newDocument();import Part;b=Part.makeBox(50,70,30);o=doc.addObject('Part::Feature','Box');o.Shape=b;doc.recompute()
-  Step 6: press Enter
-  Step 7: move cursor to viewport (1100, 540), press "0" then "v","f"
+  Step 4: press Enter
+  Step 5: {{"type":"focus_viewport"}}     -- CRUCIAL: console still has
+         keyboard focus after step 4. Without focus_viewport, the next
+         "0"/"v"/"f" keystrokes get typed into the Python console
+         instead of acting on the 3D view, leaving the camera in
+         TOP orthographic view and causing SyntaxErrors next turn.
+  Step 6: {{"type":"key","key":"0"}}      -- isometric
+  Step 7: {{"type":"key","key":"v"}} then {{"type":"key","key":"f"}}
+
+IMPORTANT: Prefer the compound actions menu_navigate and switch_workbench
+over manual chained clicks. Single bare clicks on menu items between
+turns let the dropdown auto-close, breaking navigation. The compound
+actions execute the full hover+click sequence in one shot with the
+correct Qt-friendly timing.
 
 === HOUSEKEEPING ===
   - Ctrl+N opens a new empty document. The Start page is informational
@@ -332,11 +343,17 @@ class AgentTrajectoryRunner:
     @staticmethod
     def _reset_freecad_state() -> None:
         """Pre-kill any FreeCAD process and wipe paths that would trigger
-        the Document Recovery dialog on the next launch."""
+        the Document Recovery dialog on the next launch.
+
+        FreeCAD 0.19 stores auto-recovery state under /tmp/FreeCAD_Doc_*/
+        and a lockfile at /tmp/FreeCAD_<pid>.lock. Both must be removed
+        for a clean launch.
+        """
         if shutil.which("pkill"):
             subprocess.run(["pkill", "-9", "-f", "freecad"],
                            capture_output=True, timeout=5)
             time.sleep(1.5)
+        # Static known paths.
         for path in (
             Path.home() / ".FreeCAD" / "AutoRecovery",
             Path.home() / ".config" / "FreeCAD" / "AutoRecovery",
@@ -345,12 +362,19 @@ class AgentTrajectoryRunner:
         ):
             if path.exists():
                 try:
-                    if path.is_dir():
-                        shutil.rmtree(path, ignore_errors=True)
-                    else:
-                        path.unlink(missing_ok=True)
+                    shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
                 except OSError:
                     pass
+        # Dynamic per-PID dirs and lockfiles in /tmp.
+        tmp = Path("/tmp")
+        for child in tmp.glob("FreeCAD_Doc_*"):
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+        for child in tmp.glob("FreeCAD_*.lock"):
+            try:
+                child.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     @staticmethod
     def _format_history(recent: list[TrajectoryStep]) -> str:
