@@ -14,7 +14,12 @@ class SmoketestPaths:
 
     @classmethod
     def default(cls) -> "SmoketestPaths":
-        root = Path.home() / "cua_gui_smoketest"
+        return cls.for_app("gui")
+
+    @classmethod
+    def for_app(cls, app_name: str) -> "SmoketestPaths":
+        """Runtime tree per target app — e.g. for_app('blender') -> ~/cua_blender_smoketest."""
+        root = Path.home() / f"cua_{app_name}_smoketest"
         return cls(
             root=root,
             assets=root / "assets",
