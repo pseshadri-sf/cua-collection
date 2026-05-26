@@ -92,26 +92,82 @@ class FreeCADAutomation:
 
     def _wait_for_window(self, name_substrings: list[str],
                          timeout: float) -> tuple[str | None, str | None]:
+        """Wait for the FreeCAD main window owned by `self._proc`.
+
+        Filters wmctrl results to the launched PID via xdotool --pid so we
+        don't latch onto a transient splash window from a prior instance.
+        """
         wmctrl = shutil.which("wmctrl")
+        xdotool = shutil.which("xdotool")
         if not wmctrl:
             time.sleep(min(timeout, 8.0))
             return None, None
         deadline = time.time() + timeout
         env = {**os.environ, "DISPLAY": self.display}
+        target_pid = self._proc.pid if self._proc else None
+
+        # Strict mode: require the window be both pid-matched and wmctrl-visible
+        # (wmctrl only lists "normal" top-level windows, filtering out splashes).
+        # We additionally require the window to remain valid for a moment so
+        # transient Qt internal windows don't slip through.
+        last_seen: str | None = None
         while time.time() < deadline:
+            owned_hex: set[str] = set()
+            if xdotool and target_pid is not None:
+                xs = subprocess.run(
+                    [xdotool, "search", "--pid", str(target_pid)],
+                    capture_output=True, text=True, env=env, timeout=5,
+                )
+                if xs.returncode == 0:
+                    owned_hex = {
+                        f"0x{int(line):08x}"
+                        for line in xs.stdout.split() if line.isdigit()
+                    }
+
             res = subprocess.run(
                 [wmctrl, "-l"], capture_output=True, text=True, env=env, timeout=5,
             )
+            candidates: list[tuple[str, str]] = []
             if res.returncode == 0:
                 for line in res.stdout.splitlines():
                     parts = line.split(None, 3)
                     if len(parts) < 4:
                         continue
                     wid, _desktop, _host, title = parts
+                    # Require pid ownership when we have pid info from xdotool.
+                    if target_pid is not None and owned_hex and wid.lower() not in owned_hex:
+                        continue
                     if any(s.lower() in title.lower() for s in name_substrings):
+                        candidates.append((wid, title))
+
+            if candidates:
+                wid, title = candidates[0]
+                # Stability: same wid across two scans 0.5s apart...
+                if wid == last_seen:
+                    # ...and then verify it still exists ~2s later. FreeCAD's
+                    # startup briefly creates a transient main window that
+                    # gets destroyed and recreated before the real one settles.
+                    time.sleep(2.0)
+                    if self._window_alive(wid):
                         return wid, title
-            time.sleep(1.0)
+                    last_seen = None
+                    continue
+                last_seen = wid
+            else:
+                last_seen = None
+            time.sleep(0.5)
         return None, None
+
+    def _window_alive(self, wid: str) -> bool:
+        xwininfo = shutil.which("xwininfo")
+        if not xwininfo:
+            return True  # best-effort: assume alive if we can't check
+        env = {**os.environ, "DISPLAY": self.display}
+        res = subprocess.run(
+            [xwininfo, "-id", wid], capture_output=True, text=True,
+            env=env, timeout=5,
+        )
+        return res.returncode == 0
 
     def _key(self, keysym: str) -> None:
         xdotool = shutil.which("xdotool")

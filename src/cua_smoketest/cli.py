@@ -18,6 +18,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to the freecadcmd-executable asset generator script.",
     )
     parser.add_argument("--max-assets", type=int, default=3)
+    parser.add_argument("--download", type=int, default=0,
+                        help="Download N small CAD samples from FreeCAD-library before running.")
+    parser.add_argument("--download-cache", type=str, default="",
+                        help="Where to keep the shallow library clone (default ~/.cache/freecad-library).")
+    parser.add_argument("--screenshot-prefix", type=str, default="",
+                        help="Prepended to all screenshot filenames (use to separate phases).")
+    parser.add_argument("--exclude-from", type=str, default="",
+                        help="Path to a file listing screenshot basenames to skip during download.")
+    parser.add_argument("--mode", choices=("process", "cursor"), default="process",
+                        help="Asset loading mode: process (one FreeCAD per asset, xdotool keys) "
+                             "or cursor (one FreeCAD, pyautogui mouse-driven File>Open).")
+    parser.add_argument("--skip-generation", action="store_true",
+                        help="Skip freecadcmd asset generation; just discover existing files.")
+    parser.add_argument("--only-downloaded", action="store_true",
+                        help="Run only against the assets downloaded in this invocation "
+                             "(ignored if --download is 0).")
     args = parser.parse_args(argv)
 
     paths = SmoketestPaths.default()
@@ -27,8 +43,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: generator script not found: {generator}", file=sys.stderr)
         return 2
 
-    smoketest = Smoketest(paths=paths, generator_script=generator,
-                          max_assets=args.max_assets)
+    exclude: set[str] = set()
+    if args.exclude_from:
+        ef = Path(args.exclude_from).expanduser()
+        if ef.exists():
+            exclude = {ln.strip() for ln in ef.read_text().splitlines() if ln.strip()}
+
+    smoketest = Smoketest(
+        paths=paths, generator_script=generator,
+        max_assets=args.max_assets,
+        download_count=args.download,
+        download_cache=Path(args.download_cache).expanduser() if args.download_cache else None,
+        screenshot_prefix=args.screenshot_prefix,
+        exclude_basenames=exclude,
+        mode=args.mode,
+        skip_generation=args.skip_generation,
+        only_downloaded=args.only_downloaded,
+    )
     result = smoketest.run()
 
     print("\n========== SMOKETEST REPORT ==========")
