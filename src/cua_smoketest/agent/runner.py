@@ -1,6 +1,7 @@
 """End-to-end agentic trajectory runner.
 
 Bootstraps:
+  - kills any leftover FreeCAD process and clears stale recovery state
   - acquires an X display (via DisplayManager from cua_smoketest.display)
   - launches FreeCAD into a blank state (no asset)
   - starts an ffmpeg screen recording of the whole display
@@ -10,12 +11,16 @@ Bootstraps:
       * executes the action via pyautogui
       * records the post-action timestamp as the step's `action_time`
   - terminates on `terminate` action or step exhaustion
-  - writes a JSON trajectory log and returns paths to video + JSON
+  - writes a JSON trajectory log (with full per-step reasoning) and
+    returns paths to video + JSON
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import signal
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,41 +47,56 @@ Part workbench operations, or the Python console.
 
 {action_space}
 
-Recommended approaches (pick whichever fits the GOAL_STATE best):
+=== EXACT UI COORDINATES (measured for FreeCAD 0.19, 1920x1080, default theme) ===
 
-A) Part workbench primitive (best for simple shapes like cubes, cylinders,
-   spheres, cones, toruses):
-   1. FreeCAD opens in the "Start" workbench. The workbench selector
-      dropdown is on the main toolbar around (500, 40). Click it,
-      then click "Part" in the dropdown list.
-   2. Once Part workbench is active, a "Part" menu appears in the
-      menubar near (180, 10). Open it and choose Primitives > Box
-      (or Cylinder, Sphere, Cone, Torus).
-   3. Alternatively click the Box icon in the Part toolbar (toolbar
-      icons appear near y=80 after switching to Part workbench).
+Menubar (y=10 for all):
+  File   -> x=20      Edit   -> x=58      View   -> x=99
+  Tools  -> x=144     Macro  -> x=194     Windows-> x=255     Help -> x=315
+  (Part menu only appears AFTER switching to the Part workbench, then
+   slots in between Macro and Windows around x=220.)
 
-B) Python console (most deterministic, recommended if menu clicks fail):
-   1. Open via View > Panels > Python console; this docks a console at
-      the bottom of the window. The View menu is near (100, 10).
-   2. Click into the console input area near (700, 1000) to focus it,
-      then type a one-line Python snippet to build the geometry. For
-      a box, type for example:
-      doc = App.newDocument(); import Part; b = Part.makeBox(50, 70, 30); o = doc.addObject('Part::Feature', 'Box'); o.Shape = b; doc.recompute()
-   3. Press Enter to execute.
+Top toolbar row 1 (y=40):
+  New doc      -> (30, 40)
+  Open file    -> (63, 40)
+  Save         -> (97, 40)
+  Cut/Copy/Paste -> (175/210/245, 40)
+  WORKBENCH SELECTOR (wide dropdown showing "Start"): center is (550, 40).
+    Click this, then click "Part" in the resulting dropdown list (the
+    dropdown opens DOWNWARD from (550, 40); "Part" is usually 5-8 rows
+    down, around (550, 200)). Wait ~1s after the click for the list.
 
-C) After the geometry exists, frame the camera so it matches GOAL_STATE:
-   press the key "0" for isometric view, then press "v" followed by "f"
-   for "Fit All". Note: V,F keystrokes only work when the cursor is over
-   the 3D viewport area, so move the cursor to roughly (1100, 540) first.
+3D viewport: roughly (290..1900, 105..1030). Centre at (1100, 540).
+  V,F (Fit All) and "0" (Isometric) shortcuts ONLY work when the
+  cursor is hovering inside this region. Move the cursor there with a
+  move_to action BEFORE pressing those keys.
 
-Other tips:
-  - You can create a new document with hotkey Ctrl+N. FreeCAD's Start
-    page is informational only and contains no geometry.
-  - Software OpenGL is slow; after creating geometry or switching
-    workbenches, give the GUI 1-2 seconds to repaint by issuing a
-    sleep action before screenshotting.
+=== STRATEGY A: Part workbench primitive ===
+  Step 1: click workbench selector at (550, 40)         -> dropdown opens
+  Step 2: click "Part" in the dropdown (around (550,200))
+  Step 3: click the Part menu in the menubar at (~220, 10)
+  Step 4: hover "Primitives" submenu, click "Box"        -> box appears
+  Step 5: move cursor to viewport (1100, 540), press "0" then "v","f"
+
+=== STRATEGY B: Python console (most reliable; recommended) ===
+  Step 1: click View menu at (99, 10)                  -> dropdown
+  Step 2: in the View dropdown, hover "Panels"          -> submenu
+  Step 3: click "Python console" in the Panels submenu  -> docked at bottom
+  Step 4: click the console's input field, somewhere around (700, 990)
+  Step 5: type a one-liner. For a box:
+            doc=App.newDocument();import Part;b=Part.makeBox(50,70,30);o=doc.addObject('Part::Feature','Box');o.Shape=b;doc.recompute()
+  Step 6: press Enter
+  Step 7: move cursor to viewport (1100, 540), press "0" then "v","f"
+
+=== HOUSEKEEPING ===
+  - Ctrl+N opens a new empty document. The Start page is informational
+    only and contains no geometry.
+  - Software OpenGL renders slowly. After creating geometry or switching
+    workbenches, insert a {{"type":"sleep","seconds":1.5}} action before
+    issuing the next click so the GUI fully repaints.
+  - If a "Document Recovery" dialog appears on launch, press "key":
+    "escape" to dismiss it before doing anything else.
   - If CURRENT_STATE already visually matches GOAL_STATE (a recognisable
-    3D shape in the viewport matching the goal's shape, with a similar
+    3D shape in the viewport matching the goal's shape, with similar
     camera framing), emit {{"action": {{"type": "terminate"}}, ...}}.
 
 Output: exactly one JSON object per turn:
@@ -90,6 +110,10 @@ class TrajectoryStep:
     action_time: float          # seconds from video start (action's AFTER frame)
     action: dict | None
     rationale: str | None
+    reasoning_trace: str | None = None     # full model chain-of-thought
+    raw_content: str | None = None         # raw text the model emitted
+    finish_reason: str | None = None
+    usage: dict | None = None
     parse_error: str | None = None
     exec_error: str | None = None
 
@@ -108,7 +132,7 @@ class TrajectoryResult:
 class AgentTrajectoryRunner:
     def __init__(self, *, goal_png: Path, output_dir: Path,
                  vlm: OpenRouterVLMClient,
-                 max_steps: int = 25,
+                 max_steps: int = 15,
                  display_manager: DisplayManager | None = None,
                  freecad_binary: str | None = None,
                  freecad_post_launch_delay: float = 4.0,
@@ -169,6 +193,10 @@ class AgentTrajectoryRunner:
         system_prompt = SYSTEM_PROMPT_TMPL.format(action_space=ACTION_SPACE_SPEC)
 
         try:
+            # Clear stale state before launch so the Document Recovery
+            # dialog doesn't gate the first agent steps.
+            self._reset_freecad_state()
+
             # Launch FreeCAD into its blank Start Page state.
             launch = freecad.launch(asset=None)
             time.sleep(self.freecad_post_launch_delay)
@@ -226,6 +254,10 @@ class AgentTrajectoryRunner:
                     steps.append(TrajectoryStep(
                         step_idx=step_idx, action_time=after_t,
                         action=action, rationale=resp.rationale,
+                        reasoning_trace=resp.reasoning_trace,
+                        raw_content=resp.raw_content,
+                        finish_reason=resp.finish_reason,
+                        usage=resp.usage,
                     ))
                     terminated_by = "agent"
                     break
@@ -236,6 +268,10 @@ class AgentTrajectoryRunner:
                         step_idx=step_idx,
                         action_time=time.monotonic() - t0,
                         action=None, rationale=resp.rationale,
+                        reasoning_trace=resp.reasoning_trace,
+                        raw_content=resp.raw_content,
+                        finish_reason=resp.finish_reason,
+                        usage=resp.usage,
                         parse_error="action was not a JSON object",
                     ))
                     continue
@@ -248,6 +284,10 @@ class AgentTrajectoryRunner:
                     action_time=after_t,
                     action=action,
                     rationale=resp.rationale,
+                    reasoning_trace=resp.reasoning_trace,
+                    raw_content=resp.raw_content,
+                    finish_reason=resp.finish_reason,
+                    usage=resp.usage,
                     exec_error=exec_result.error,
                 ))
                 if not exec_result.ok:
@@ -290,6 +330,29 @@ class AgentTrajectoryRunner:
     # --- helpers -----------------------------------------------------------
 
     @staticmethod
+    def _reset_freecad_state() -> None:
+        """Pre-kill any FreeCAD process and wipe paths that would trigger
+        the Document Recovery dialog on the next launch."""
+        if shutil.which("pkill"):
+            subprocess.run(["pkill", "-9", "-f", "freecad"],
+                           capture_output=True, timeout=5)
+            time.sleep(1.5)
+        for path in (
+            Path.home() / ".FreeCAD" / "AutoRecovery",
+            Path.home() / ".config" / "FreeCAD" / "AutoRecovery",
+            Path.home() / ".local" / "share" / "FreeCAD" / "AutoRecovery",
+            Path("/tmp") / "FreeCAD-Crash",
+        ):
+            if path.exists():
+                try:
+                    if path.is_dir():
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    @staticmethod
     def _format_history(recent: list[TrajectoryStep]) -> str:
         lines: list[str] = []
         for s in recent:
@@ -322,6 +385,10 @@ class AgentTrajectoryRunner:
                 "action_time_seconds": round(s.action_time, 3),
                 "action": s.action,
                 "rationale": s.rationale,
+                "reasoning_trace": s.reasoning_trace,
+                "raw_content": s.raw_content,
+                "finish_reason": s.finish_reason,
+                "usage": s.usage,
                 "parse_error": s.parse_error,
                 "exec_error": s.exec_error,
             })

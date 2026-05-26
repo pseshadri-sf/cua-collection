@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="Where to write trajectory.mp4, trajectory.json, frames/, logs/.")
     parser.add_argument("--model", default="google/gemma-4-31b-it",
                         help="OpenRouter model id.")
-    parser.add_argument("--max-steps", type=int, default=25)
+    parser.add_argument("--max-steps", type=int, default=15)
     parser.add_argument("--env-file", default="/home/ubuntu/.env",
                         help="Path to a .env file containing the API key.")
     parser.add_argument("--api-key-var", default="OPENAI_API_KEY",

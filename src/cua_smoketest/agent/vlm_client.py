@@ -152,7 +152,7 @@ class OpenRouterVLMClient:
     # --- internals ---------------------------------------------------------
 
     def _post_with_retry(self, headers: dict, payload: dict,
-                         max_attempts: int = 4) -> dict:
+                         max_attempts: int = 8) -> dict:
         """POST with exponential backoff on 5xx / network errors / 200-body 5xx."""
         last_error: str = ""
         for attempt in range(1, max_attempts + 1):
@@ -196,7 +196,7 @@ class OpenRouterVLMClient:
 
     @staticmethod
     def _backoff(attempt: int) -> None:
-        delay = min(2 ** attempt, 16)
+        delay = min(2 ** attempt, 30)
         time.sleep(delay)
 
     @staticmethod
