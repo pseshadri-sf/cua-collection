@@ -165,25 +165,31 @@ class Smoketest:
         return f"{path.stem.lower()}_{path.suffix.lstrip('.').lower()}"
 
     @staticmethod
-    def _freecad_version(inspector: EnvironmentInspector, env: EnvironmentReport) -> str:
+    def _first_matching_line(text: str, needle: str) -> str:
+        for line in text.splitlines():
+            if needle.lower() in line.lower():
+                return line.strip()
+        return text.strip().splitlines()[0] if text.strip() else ""
+
+    def _freecad_version(self, inspector: EnvironmentInspector,
+                         env: EnvironmentReport) -> str:
         binary = inspector.freecadcmd_binary(env)
         if not binary:
             return ""
         try:
             out = subprocess.run([binary, "--version"], capture_output=True,
                                  text=True, timeout=10)
-            return (out.stdout + out.stderr).strip().splitlines()[0] if (out.stdout or out.stderr) else ""
+            return self._first_matching_line(out.stdout + "\n" + out.stderr, "FreeCAD")
         except Exception:  # noqa: BLE001
             return ""
 
-    @staticmethod
-    def _blender_version(env: EnvironmentReport) -> str:
+    def _blender_version(self, env: EnvironmentReport) -> str:
         binary = env.tools.get("blender") or shutil.which("blender")
         if not binary:
             return ""
         try:
             out = subprocess.run([binary, "--version"], capture_output=True,
                                  text=True, timeout=15)
-            return (out.stdout or out.stderr).strip().splitlines()[0]
+            return self._first_matching_line(out.stdout + "\n" + out.stderr, "Blender")
         except Exception:  # noqa: BLE001
             return ""
