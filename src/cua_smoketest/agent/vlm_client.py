@@ -92,11 +92,11 @@ class OpenRouterVLMClient:
             # Total completion budget. Reasoning + visible content must fit
             # together; with effort:medium we still want plenty of room for
             # the JSON action object after the model thinks.
-            "max_tokens": 4096,
-            # Ask OpenRouter to surface the model's reasoning trace.
+            # Generous completion budget so high-effort reasoning has room
+            # to think AND emit the JSON action object afterwards.
+            "max_tokens": 8192,
             # OpenRouter rejects passing both effort and max_tokens; pick one.
-            # "low" leaves more completion budget for the JSON action object.
-            "reasoning": {"effort": "low"},
+            "reasoning": {"effort": "high"},
             # We want JSON back; many models honor this hint.
             "response_format": {"type": "json_object"},
         }
