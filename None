@@ -1,0 +1,16 @@
+{
+  "found": false,
+  "object_count": 0,
+  "object_names": [],
+  "volume": 0.0,
+  "surface_area": 0.0,
+  "bbox": [
+    0,
+    0,
+    0
+  ],
+  "face_count": 0,
+  "edge_count": 0,
+  "vertex_count": 0,
+  "error": "RuntimeError: unsupported extension: py"
+}
