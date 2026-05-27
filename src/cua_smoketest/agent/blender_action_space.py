@@ -28,6 +28,7 @@ VALID_TYPES = {
     "type", "key", "hotkey", "scroll", "sleep", "terminate",
     "open_python_console", "switch_workspace",
     "focus_viewport",
+    "python_eval", "frame_all",
 }
 
 
@@ -94,6 +95,35 @@ You may emit exactly one action per turn, formatted as JSON. Available actions:
       in Layout it sits at roughly (700, 400). This macro targets
       the Scripting viewport since that's the workspace
       open_python_console leaves you in.
+
+  {"type": "python_eval", "code": "<one line of Python>"}
+      PREFERRED for all bpy actions. Compound macro that:
+        1. Switches to the Scripting workspace if not already there.
+        2. Clicks into the Python console input row (forces focus).
+        3. Ctrl+A + Backspace clears any stray input.
+        4. Types the code one character at a time.
+        5. Presses Enter to execute.
+        6. Sleeps so bpy ops finish and the viewport redraws.
+      Atomic — focus can't drift between sub-steps. Always use this
+      instead of chaining open_python_console + type + key("enter")
+      manually.
+      Code MUST be a single physical line. Multiple statements are
+      OK if separated by semicolons, but `if`/`for`/`def` blocks
+      with semicolons after the colon DO NOT WORK (Python rule:
+      after `if x:` only one simple statement is allowed before
+      semicolon). Use list comprehensions or rewrites that avoid
+      block statements. Examples that work:
+        import bpy; bpy.ops.mesh.primitive_monkey_add()
+        import bpy; [bpy.data.objects.remove(o,do_unlink=True) for o in list(bpy.data.objects) if o.type=='MESH']
+        import bpy; bpy.ops.object.select_all(action='DESELECT'); bpy.data.objects['Cube'].select_set(True); bpy.ops.object.delete()
+      Examples that DO NOT work (broken Python):
+        if l: l.name='Sun'; l.location=(4,-4,8)      # 2nd+3rd stmt run unconditionally!
+        for o in bpy.data.objects: o.name='x'; o.hide=True   # 2nd stmt runs once after loop!
+
+  {"type": "frame_all"}
+      Compound macro: clicks the 3D viewport (transfers focus) then
+      presses Home (Blender's "View All" shortcut). Atomic
+      replacement for focus_viewport + key("Home").
 """
 
 
@@ -230,6 +260,38 @@ class BlenderActionExecutor:
         self._pg.click()
         return ExecutionResult(True, post_action_sleep=0.5)
 
+    def _do_python_eval(self, a: dict) -> ExecutionResult:
+        """Atomic: switch to Scripting, focus console, type, Enter, settle."""
+        code = a.get("code")
+        if not isinstance(code, str) or not code.strip():
+            return ExecutionResult(False, "'python_eval' requires non-empty string 'code'")
+        if self._current_workspace != "Scripting":
+            self._cycle_to("Scripting")
+            time.sleep(1.0)
+        cx, cy = SCRIPTING_PY_CONSOLE_XY
+        self._pg.moveTo(cx, cy, duration=0.15)
+        self._pg.click()
+        time.sleep(0.4)
+        self._pg.hotkey("ctrl", "a")
+        time.sleep(0.1)
+        self._pg.press("backspace")
+        time.sleep(0.1)
+        self._pg.typewrite(code, interval=0.005)
+        time.sleep(0.3)
+        self._pg.press("enter")
+        time.sleep(1.5)
+        return ExecutionResult(True, post_action_sleep=0.4)
+
+    def _do_frame_all(self, a: dict) -> ExecutionResult:
+        """Atomic: click viewport (focus) + press Home (Frame All)."""
+        x, y = SCRIPTING_VIEWPORT_XY if self._current_workspace == "Scripting" else LAYOUT_VIEWPORT_XY
+        self._pg.moveTo(x, y, duration=0.15)
+        self._pg.click()
+        time.sleep(0.3)
+        self._pg.press("Home")
+        time.sleep(0.5)
+        return ExecutionResult(True, post_action_sleep=0.4)
+
     # --- internals ---------------------------------------------------------
 
     def _cycle_to(self, target: str) -> None:
@@ -242,13 +304,15 @@ class BlenderActionExecutor:
         tx, ty = TOPBAR_TAB_STRIP_XY
         self._pg.moveTo(tx, ty, duration=0.15)
         time.sleep(0.3)
+        # pyautogui uses "pageup"/"pagedown" (NOT X11 names "Prior"/"Next");
+        # the X11 names silently no-op, leaving the workspace unchanged.
         if forward <= backward:
             for _ in range(forward):
-                self._pg.hotkey("ctrl", "Next")  # Ctrl+PageDown
+                self._pg.hotkey("ctrl", "pagedown")
                 time.sleep(0.25)
         else:
             for _ in range(backward):
-                self._pg.hotkey("ctrl", "Prior")  # Ctrl+PageUp
+                self._pg.hotkey("ctrl", "pageup")
                 time.sleep(0.25)
         self._current_workspace = target
 

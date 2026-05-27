@@ -54,14 +54,13 @@ In the Scripting workspace:
   Text editor right.
 
 === STRATEGY: Python console (recommended) ===
-  Step 1: {{"type":"open_python_console"}}
-         -- single macro: cycles Layout -> Scripting and focuses
-         the console input row.
-  Step 2: {{"type":"type","text":"<bpy one-liner>"}}
-         A good template for replacing the default cube and adding new
-         geometry, all on one line:
-           import bpy; bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(); bpy.ops.mesh.primitive_cube_add(size=2)
-         Replace primitive_cube_add(...) with whatever GOAL_STATE shows.
+  Step 1: {{"type":"python_eval","code":"import bpy; bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(); bpy.ops.mesh.primitive_monkey_add()"}}
+         -- Atomic: switches to Scripting, focuses console, types
+         the line, presses Enter, and waits for execution. ALWAYS
+         use python_eval instead of chaining open_python_console +
+         type + key("enter") manually -- focus drift between those
+         three actions is the #1 failure mode here.
+         Replace primitive_monkey_add(...) with whatever GOAL_STATE shows.
          Useful primitives (all in bpy.ops.mesh.*):
            primitive_cube_add(size=2)
            primitive_uv_sphere_add(radius=1)
@@ -72,15 +71,22 @@ In the Scripting workspace:
            primitive_monkey_add()    # Suzanne
            primitive_plane_add(size=2)
          All take location=(x,y,z) and rotation=(rx,ry,rz) kwargs.
-  Step 3: {{"type":"key","key":"enter"}}  -- execute the line.
-  Step 4: {{"type":"focus_viewport"}}     -- transfer focus to 3D view.
-         CRITICAL: console keeps focus after Enter; Home and other
-         viewport shortcuts will be TYPED INTO THE CONSOLE without
-         this step.
-  Step 5: {{"type":"key","key":"Home"}}   -- "Frame All": zooms the
-         camera to fit all visible geometry. This is Blender's
-         equivalent of FreeCAD's V,F.
-  Step 6: terminate if visual match is satisfactory.
+  Step 2: {{"type":"frame_all"}}
+         -- Atomic: clicks viewport (transfers focus) then presses
+         Home to fit all geometry. Equivalent of focus_viewport +
+         key("Home") but reliable.
+  Step 3: terminate if visual match is satisfactory.
+
+CRITICAL RULES for python_eval `code`:
+  - Must be ONE physical line.
+  - Multiple statements via semicolons are OK in straight-line code.
+  - BUT `if cond: stmt1; stmt2` does NOT mean "do stmt1 and stmt2 if
+    cond" -- only stmt1 is conditional, stmt2 always runs. Same for
+    for/while bodies. If you need multiple statements under a
+    condition, use a list comprehension or split across multiple
+    python_eval actions.
+  - Use list comprehensions instead of loops:
+      [bpy.data.objects.remove(o,do_unlink=True) for o in list(bpy.data.objects) if o.type=='MESH']
 
 === STRATEGY: 3D viewport menus (fallback) ===
   Move cursor over viewport, press Shift+A to open the Add menu.
@@ -315,14 +321,24 @@ class BlenderAgentTrajectoryRunner:
 
     @staticmethod
     def _reset_blender_state() -> None:
-        if shutil.which("pkill"):
-            subprocess.run(["pkill", "-9", "-f", "blender"],
-                           capture_output=True, timeout=5)
+        # IMPORTANT: don't use pkill -f "blender" — that matches our own
+        # process (blender_agent_trajectory.py) by command-line. Match only
+        # the Blender binary basename via pgrep -x and kill by PID.
+        if shutil.which("pgrep") and shutil.which("kill"):
+            res = subprocess.run(
+                ["pgrep", "-x", "blender"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for pid in res.stdout.split():
+                try:
+                    subprocess.run(["kill", "-9", pid],
+                                   capture_output=True, timeout=5)
+                except subprocess.SubprocessError:
+                    pass
             time.sleep(1.5)
         # Blender keeps autosave .blend in /tmp/quit.blend on quit; remove it.
-        for path in (Path("/tmp/quit.blend"), Path.home() / ".config" / "blender"):
-            # The blender config dir is preserved; only clear the temp save.
-            if path.name == "quit.blend" and path.exists():
+        for path in (Path("/tmp/quit.blend"),):
+            if path.exists():
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:

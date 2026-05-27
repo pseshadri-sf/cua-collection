@@ -178,10 +178,13 @@ class OpenRouterVLMClient:
                 )
             try:
                 body = resp.json()
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"OpenRouter returned non-JSON body (200): {resp.text[:300]}"
-                ) from exc
+            except json.JSONDecodeError:
+                # OpenRouter sometimes sends only keep-alive newlines when an
+                # upstream provider stalls; the body is empty/whitespace.
+                # Treat this as a transient failure and retry.
+                last_error = f"200 with non-JSON body ({len(resp.text)} bytes whitespace)"
+                self._backoff(attempt)
+                continue
             # Some 200 responses still carry an upstream error envelope.
             err = body.get("error") if isinstance(body, dict) else None
             if err and isinstance(err, dict):
