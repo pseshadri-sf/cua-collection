@@ -371,7 +371,13 @@ class AgentTrajectoryRunner:
         and a lockfile at /tmp/FreeCAD_<pid>.lock. Both must be removed
         for a clean launch.
         """
-        if shutil.which("pkill"):
+        # In parallel mode the orchestrator owns per-worker lifecycle and
+        # this process MUST NOT kill sibling workers' FreeCAD instances.
+        # `pkill -f freecad` is process-blind; skip it when the
+        # orchestrator marks this run as parallel via CUA_WORKER_ID.
+        # The HOME-isolated AutoRecovery dirs below are still cleared.
+        in_parallel_mode = bool(os.environ.get("CUA_WORKER_ID"))
+        if shutil.which("pkill") and not in_parallel_mode:
             subprocess.run(["pkill", "-9", "-f", "freecad"],
                            capture_output=True, timeout=5)
             time.sleep(1.5)

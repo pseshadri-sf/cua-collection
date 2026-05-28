@@ -346,7 +346,10 @@ class BlenderAgentTrajectoryRunner:
         # IMPORTANT: don't use pkill -f "blender" — that matches our own
         # process (blender_agent_trajectory.py) by command-line. Match only
         # the Blender binary basename via pgrep -x and kill by PID.
-        if shutil.which("pgrep") and shutil.which("kill"):
+        # In parallel mode the orchestrator owns per-worker lifecycle and
+        # this process MUST NOT kill sibling workers' Blender instances.
+        in_parallel_mode = bool(os.environ.get("CUA_WORKER_ID"))
+        if shutil.which("pgrep") and shutil.which("kill") and not in_parallel_mode:
             res = subprocess.run(
                 ["pgrep", "-x", "blender"],
                 capture_output=True, text=True, timeout=5,
