@@ -35,7 +35,7 @@ def resolve_freecad_goal_asset(goal_png: Path) -> Path | None:
     its source asset under FREECAD_ASSETS_DIR (`cylinder.step`).
     """
     name = goal_png.name
-    m = re.match(r"^[AB]_\d+_loaded_(.+?)_(step|stp|fcstd|brep|iges|igs|stl)\.png$",
+    m = re.match(r"^[A-Z]_\d+_loaded_(.+?)_(step|stp|fcstd|brep|iges|igs|stl)\.png$",
                  name, re.IGNORECASE)
     if not m:
         return None
@@ -66,7 +66,7 @@ def resolve_freecad_goal_asset(goal_png: Path) -> Path | None:
 def resolve_blender_goal_asset(goal_png: Path) -> Path | None:
     """Map e.g. `A_02_loaded_01_cube.png` -> `01_cube.blend`."""
     name = goal_png.name
-    m = re.match(r"^[AB]_\d+_loaded_(\d+_[a-z_0-9]+)\.png$", name, re.IGNORECASE)
+    m = re.match(r"^[A-Z]_\d+_loaded_(\d+_[a-z_0-9]+)\.png$", name, re.IGNORECASE)
     if not m:
         return None
     base = m.group(1)

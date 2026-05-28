@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import sys
 from typing import Callable
 
@@ -317,6 +318,174 @@ def build_textured_monkey() -> None:
     add_camera_and_light()
 
 
+# --- harder procedural scenes (27..40) ------------------------------------
+
+def build_boolean_diff_cube_sphere() -> None:
+    """Cube with a spherical bite removed via the Boolean modifier."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2)
+    cube = bpy.context.active_object
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=1.3, location=(1.0, 1.0, 1.0))
+    sphere = bpy.context.active_object
+    sphere.hide_viewport = True; sphere.hide_render = True
+    mod = cube.modifiers.new("bool", "BOOLEAN")
+    mod.operation = "DIFFERENCE"; mod.object = sphere
+    add_camera_and_light()
+
+
+def build_boolean_union_chain() -> None:
+    """Three cubes united into one shape via Boolean union."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
+    base = bpy.context.active_object
+    for i, loc in enumerate([(1.5, 0, 0.5), (-1.5, 0, 0.5)]):
+        bpy.ops.mesh.primitive_cube_add(size=1.2, location=loc)
+        cube = bpy.context.active_object
+        cube.hide_viewport = True; cube.hide_render = True
+        mod = base.modifiers.new(f"u{i}", "BOOLEAN")
+        mod.operation = "UNION"; mod.object = cube
+    add_camera_and_light()
+
+
+def build_array_torus_circle() -> None:
+    """6 toruses arranged in a circle via the Array modifier with object offset."""
+    reset_scene()
+    # Empty as rotation pivot
+    bpy.ops.object.empty_add(location=(0, 0, 0))
+    empty = bpy.context.active_object
+    empty.rotation_euler[2] = math.radians(60)
+    bpy.ops.mesh.primitive_torus_add(major_radius=0.4, minor_radius=0.12,
+                                      location=(2.0, 0, 0))
+    torus = bpy.context.active_object
+    mod = torus.modifiers.new("arr", "ARRAY")
+    mod.fit_type = "FIXED_COUNT"; mod.count = 6
+    mod.use_object_offset = True; mod.offset_object = empty
+    mod.use_relative_offset = False
+    add_camera_and_light()
+
+
+def build_subdiv_bevel_cube() -> None:
+    """Cube with bevel + subdivision modifier stack (rounded organic cube)."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2)
+    obj = bpy.context.active_object
+    b = obj.modifiers.new("bev", "BEVEL"); b.width = 0.25; b.segments = 4
+    s = obj.modifiers.new("sub", "SUBSURF"); s.levels = 3; s.render_levels = 3
+    add_camera_and_light()
+
+
+def build_kitbash_robot() -> None:
+    """5-part 'robot' assembly: torso + head + two arms + base."""
+    reset_scene()
+    # base
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, -0.5))
+    bpy.context.active_object.scale = (1.4, 1.4, 0.2)
+    # torso
+    bpy.ops.mesh.primitive_cube_add(size=1.6, location=(0, 0, 1.0))
+    # head
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.55, location=(0, 0, 2.3))
+    # arms
+    for x in (-1.3, 1.3):
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.2, depth=1.6,
+                                             location=(x, 0, 1.0))
+        bpy.context.active_object.rotation_euler = (0, math.radians(90), 0)
+    add_camera_and_light()
+
+
+def build_text_3d() -> None:
+    """Extruded 3D text object — exercises object-type variety."""
+    reset_scene()
+    bpy.ops.object.text_add(location=(-1.5, 0, 0))
+    txt = bpy.context.active_object
+    txt.data.body = "BLEND"; txt.data.extrude = 0.15
+    add_camera_and_light()
+
+
+def build_helix_curve() -> None:
+    """Helical curve converted to mesh (spiral spring)."""
+    reset_scene()
+    bpy.ops.curve.primitive_bezier_circle_add(radius=0.3)
+    circle = bpy.context.active_object
+    bpy.ops.curve.primitive_nurbs_path_add(location=(0, 0, 0))
+    path = bpy.context.active_object
+    path.data.bevel_object = circle
+    path.scale = (1.5, 1.5, 2.0)
+    add_camera_and_light()
+
+
+def build_displaced_plane() -> None:
+    """High-poly plane with noise-style displacement modifier."""
+    reset_scene()
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=40, y_subdivisions=40, size=4)
+    obj = bpy.context.active_object
+    tex = bpy.data.textures.new("noise", type="CLOUDS")
+    m = obj.modifiers.new("disp", "DISPLACE")
+    m.texture = tex; m.strength = 0.4
+    add_camera_and_light()
+
+
+def build_random_scatter_mixed() -> None:
+    """30 random primitive objects (cube/sphere/cylinder) in a volume."""
+    reset_scene()
+    rng = random.Random(424242)
+    primitives = [
+        ("CUBE",     lambda: bpy.ops.mesh.primitive_cube_add(size=rng.uniform(0.2, 0.5))),
+        ("SPHERE",   lambda: bpy.ops.mesh.primitive_uv_sphere_add(radius=rng.uniform(0.15, 0.35))),
+        ("CYLINDER", lambda: bpy.ops.mesh.primitive_cylinder_add(radius=rng.uniform(0.1, 0.25),
+                                                                  depth=rng.uniform(0.3, 0.8))),
+    ]
+    for _ in range(30):
+        kind, fn = rng.choice(primitives)
+        fn()
+        obj = bpy.context.active_object
+        obj.location = (rng.uniform(-2, 2), rng.uniform(-2, 2), rng.uniform(0, 2))
+        obj.rotation_euler = (rng.uniform(0, math.pi), rng.uniform(0, math.pi),
+                              rng.uniform(0, math.pi))
+    add_camera_and_light()
+
+
+def build_stacked_torus_tower() -> None:
+    """Vertical stack of 8 toruses with decreasing radius (totem)."""
+    reset_scene()
+    for i in range(8):
+        r = 1.0 - 0.08 * i
+        bpy.ops.mesh.primitive_torus_add(major_radius=r, minor_radius=0.18,
+                                          location=(0, 0, i * 0.45))
+    add_camera_and_light()
+
+
+def build_metaballs_blob() -> None:
+    """Two metaballs merging — a smooth organic blob."""
+    reset_scene()
+    bpy.ops.object.metaball_add(type="BALL", location=(-0.4, 0, 0.5))
+    bpy.ops.object.metaball_add(type="BALL", location=(0.4, 0, 0.5))
+    add_camera_and_light()
+
+
+def build_screw_helix() -> None:
+    """Screw modifier on a square cross-section profile → twisted column."""
+    reset_scene()
+    bpy.ops.mesh.primitive_plane_add(size=0.4, location=(1, 0, 0))
+    obj = bpy.context.active_object
+    obj.rotation_euler = (math.radians(90), 0, 0)
+    m = obj.modifiers.new("scr", "SCREW")
+    m.steps = 32; m.render_steps = 32
+    m.screw_offset = 4.0; m.iterations = 1
+    add_camera_and_light()
+
+
+def build_mirror_array_combo() -> None:
+    """One cube with array → mirror modifier stack (symmetric ladder)."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=0.5, location=(0.7, 0, 0))
+    obj = bpy.context.active_object
+    a = obj.modifiers.new("arr", "ARRAY")
+    a.fit_type = "FIXED_COUNT"; a.count = 5
+    a.relative_offset_displace = (1.5, 0, 0)
+    mr = obj.modifiers.new("mir", "MIRROR"); mr.use_axis = (True, False, False)
+    add_camera_and_light()
+
+
 # --- driver ----------------------------------------------------------------
 
 
@@ -347,6 +516,19 @@ SCENES: list[tuple[str, Callable[[], None]]] = [
     ("24_arch",               build_arch),
     ("25_lattice_cubes",      build_lattice_cubes),
     ("26_textured_monkey",    build_textured_monkey),
+    ("27_bool_cube_sphere",   build_boolean_diff_cube_sphere),
+    ("28_bool_union_chain",   build_boolean_union_chain),
+    ("29_array_torus_circle", build_array_torus_circle),
+    ("30_subdiv_bevel_cube",  build_subdiv_bevel_cube),
+    ("31_kitbash_robot",      build_kitbash_robot),
+    ("32_text_3d",            build_text_3d),
+    ("33_helix_curve",        build_helix_curve),
+    ("34_displaced_plane",    build_displaced_plane),
+    ("35_random_mixed",       build_random_scatter_mixed),
+    ("36_torus_tower",        build_stacked_torus_tower),
+    ("37_metaballs_blob",     build_metaballs_blob),
+    ("38_screw_helix",        build_screw_helix),
+    ("39_mirror_array",       build_mirror_array_combo),
 ]
 
 

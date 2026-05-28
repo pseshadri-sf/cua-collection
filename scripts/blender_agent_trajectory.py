@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_fallbacks=not args.strict_provider,
         reasoning_effort=args.reasoning_effort,
         image_max_dim=args.image_max_dim,
+        app="blender",
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),
