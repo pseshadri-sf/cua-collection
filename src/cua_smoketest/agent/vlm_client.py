@@ -59,10 +59,20 @@ block (all dims comparable). Type numbers that match the goal — do
 NOT copy the template verbatim.
 
 ANTI-REPETITION RULE: Look at Recent history. If your previous
-action was identical to the action you are about to emit AND the
-CURRENT_STATE did not change visibly, pick a DIFFERENT action — do
-not re-click the same coordinate. The dropdown almost certainly
-auto-closed; reach for a compound macro or change strategy.
+action was identical (or nearly identical) to the action you are
+about to emit AND the CURRENT_STATE did not change visibly, pick a
+DIFFERENT action.
+  - Repeated identical click coords → the dropdown auto-closed.
+    Use a compound macro instead.
+  - Repeated identical `type` / `python_eval` payload → your code
+    didn't take effect (focus was lost, or the console swallowed it).
+    Either issue {"type":"focus_viewport"} then re-attempt, OR
+    type a DIFFERENT variant — e.g. wrap in
+    `exec(...)` / `eval(...)` / append `;bpy.context.view_layer.update()`
+    / change at least one numeric parameter. Re-typing the SAME bytes
+    a third time is wasted budget.
+  - Repeated identical `menu_navigate` path → that path either failed
+    or already executed. Switch to typing instead.
 
 FORBIDDEN: File>Open, File>Recent, drag-and-drop. The goal is to
 CONSTRUCT the geometry — never load it.
@@ -120,6 +130,39 @@ FreeCAD dimension hints (millimetres):
 
   fused multi-part assembly (combine two shapes):
     doc=App.newDocument();import Part;a=Part.makeBox(X1,Y1,Z1);b=Part.makeCylinder(R,H);b.translate(App.Vector(TX,TY,TZ));s=a.fuse(b);o=doc.addObject('Part::Feature','A');o.Shape=s;doc.recompute()
+
+  pulley / disk with center bore (round flange + axial hole):
+    doc=App.newDocument();import Part;disk=Part.makeCylinder(OR,T);bore=Part.makeCylinder(IR,T*2,App.Vector(0,0,-T/2));s=disk.cut(bore);o=doc.addObject('Part::Feature','Pulley');o.Shape=s;doc.recompute()
+
+  bearing (concentric rings: outer race + inner race, race width T):
+    doc=App.newDocument();import Part;outer=Part.makeCylinder(OR,T);mid=Part.makeCylinder(MR,T);inner=Part.makeCylinder(IR,T);s=outer.cut(mid).fuse(inner);o=doc.addObject('Part::Feature','Bearing');o.Shape=s;doc.recompute()
+
+  sprocket (toothed disk — approximate as cylinder + small radial cubes for teeth):
+    doc=App.newDocument();import Part,math;disk=Part.makeCylinder(R,T);teeth=disk;
+    [teeth:=teeth.fuse(Part.makeBox(TW,TW,T,App.Vector(R*math.cos(2*math.pi*i/N)-TW/2,R*math.sin(2*math.pi*i/N)-TW/2,0))) for i in range(N)];
+    o=doc.addObject('Part::Feature','Sprk');o.Shape=teeth;doc.recompute()
+    (compress to one line; if too complex, fall back to plain pulley template with R+T tuned)
+
+  ring / torus / round gasket:
+    doc=App.newDocument();import Part;t=Part.makeTorus(MR,mR);o=doc.addObject('Part::Feature','Ring');o.Shape=t;doc.recompute()
+
+  socket-head cap screw / bolt (head + shaft, simplified):
+    doc=App.newDocument();import Part;head=Part.makeCylinder(HR,HT);shaft=Part.makeCylinder(SR,SL,App.Vector(0,0,HT));s=head.fuse(shaft);o=doc.addObject('Part::Feature','Bolt');o.Shape=s;doc.recompute()
+
+NO-TEMPLATE FALLBACK: If none of the templates above clearly match
+the goal shape, DO NOT loop on menu_navigate looking for a primitive
+button — that's wasted budget. Type the closest approximation:
+  - Anything roundish & symmetric  → cylinder or pulley template
+  - Anything blocky / rectilinear  → box or fused multi-part
+  - Anything organic / smooth      → sphere or torus
+A rough approximation that runs is worth 30-60 match_score points;
+a perfect navigation through menus with no `type` action is worth 0.
+
+GUARDRAIL: Emit at most TWO `menu_navigate` actions per trajectory.
+The only one you genuinely need is the Python-console open at step 1.
+After that, every action should be a click/type/key/focus_viewport
+that advances the reconstruction. If you find yourself about to emit
+a third menu_navigate, type the closest-matching template instead.
 """
 
 _QWEN_BLENDER_STRATEGY = """\
@@ -181,6 +224,49 @@ bpy templates (adjust numbers per the goal image):
 
   ring of N objects (circular arrangement, radius R):
     import bpy,math;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();[(bpy.ops.mesh.primitive_uv_sphere_add(location=(R*math.cos(2*math.pi*i/N),R*math.sin(2*math.pi*i/N),0))) for i in range(N)]
+
+  boolean DIFFERENCE (cube with a spherical bite taken out):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2);c=bpy.context.active_object;bpy.ops.mesh.primitive_uv_sphere_add(radius=1.3,location=(1,1,1));s=bpy.context.active_object;s.hide_viewport=True;m=c.modifiers.new('b','BOOLEAN');m.operation='DIFFERENCE';m.object=s
+
+  boolean UNION (multiple primitives merged into one mass):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2);base=bpy.context.active_object
+    Then for each extra shape: bpy.ops.mesh.primitive_cube_add(size=1.2,location=(X,Y,Z));ext=bpy.context.active_object;ext.hide_viewport=True;m=base.modifiers.new('u','BOOLEAN');m.operation='UNION';m.object=ext
+
+  subdivision + bevel modifier stack (rounded organic cube):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2);o=bpy.context.active_object;b=o.modifiers.new('b','BEVEL');b.width=0.25;b.segments=4;s=o.modifiers.new('s','SUBSURF');s.levels=3
+
+  array modifier (N copies along an axis, spacing S):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=0.5);o=bpy.context.active_object;m=o.modifiers.new('a','ARRAY');m.fit_type='FIXED_COUNT';m.count=N;m.relative_offset_displace=(S,0,0)
+
+  mirror modifier (symmetric copy across an axis — combine with array for ladders):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=0.5,location=(0.7,0,0));o=bpy.context.active_object;mr=o.modifiers.new('m','MIRROR');mr.use_axis=(True,False,False)
+
+  text (3D extruded letters — for word/letter goals):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.object.text_add(location=(-1.5,0,0));t=bpy.context.active_object;t.data.body='BLEND';t.data.extrude=0.15
+
+  multi-object kitbash (robot/figure/assembly — N parts):
+    Multiple type+enter pairs, each adding one part:
+    bpy.ops.mesh.primitive_cube_add(size=2,location=(0,0,-0.5))     # base
+    bpy.ops.mesh.primitive_cube_add(size=1.6,location=(0,0,1.0))    # torso
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.55,location=(0,0,2.3))  # head
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.2,depth=1.6,location=(1.3,0,1.0))  # arm
+
+  random scatter (N primitives at random positions — for messy scenes):
+    import bpy,random;random.seed(42);bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();[bpy.ops.mesh.primitive_cube_add(size=random.uniform(0.2,0.5),location=(random.uniform(-2,2),random.uniform(-2,2),random.uniform(0,2))) for _ in range(N)]
+
+  metaballs blob (smooth organic — for fluid/blob goals):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.object.metaball_add(type='BALL',location=(-0.4,0,0.5));bpy.ops.object.metaball_add(type='BALL',location=(0.4,0,0.5))
+
+  helix / spiral / spring (screw modifier on a profile):
+    import bpy,math;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_plane_add(size=0.4,location=(1,0,0));o=bpy.context.active_object;o.rotation_euler=(math.radians(90),0,0);m=o.modifiers.new('s','SCREW');m.steps=32;m.screw_offset=4.0
+
+  displaced plane / terrain (high-poly plane with noise displacement):
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_grid_add(x_subdivisions=40,y_subdivisions=40,size=4);o=bpy.context.active_object;tex=bpy.data.textures.new('n',type='CLOUDS');m=o.modifiers.new('d','DISPLACE');m.texture=tex;m.strength=0.4
+
+NO-TEMPLATE FALLBACK: If none of the templates above clearly match
+the goal shape, DO NOT loop on menus. Type the closest-matching
+template — a rough approximation is worth 30-60 match_score points;
+a perfectly-navigated menu with no python_eval is worth 0.
 """
 
 _QWEN_FREECAD_REMINDER = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_FREECAD_STRATEGY

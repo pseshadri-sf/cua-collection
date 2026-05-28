@@ -486,6 +486,226 @@ def build_mirror_array_combo() -> None:
     add_camera_and_light()
 
 
+# --- 40..60 scenes: more variety in object count / modifier depth ----------
+
+def build_cube_4x4_grid() -> None:
+    reset_scene()
+    for x in range(-2, 2):
+        for y in range(-2, 2):
+            bpy.ops.mesh.primitive_cube_add(size=0.8, location=(x*1.2, y*1.2, 0))
+    add_camera_and_light()
+
+
+def build_sphere_6x6_grid() -> None:
+    reset_scene()
+    for x in range(-3, 3):
+        for y in range(-3, 3):
+            bpy.ops.mesh.primitive_uv_sphere_add(radius=0.35, location=(x*0.9, y*0.9, 0))
+    add_camera_and_light()
+
+
+def build_curved_array_torus() -> None:
+    reset_scene()
+    bpy.ops.object.empty_add(location=(0, 0, 0))
+    empty = bpy.context.active_object
+    empty.rotation_euler[2] = math.radians(45)
+    bpy.ops.mesh.primitive_torus_add(major_radius=0.3, minor_radius=0.1, location=(1.5, 0, 0))
+    t = bpy.context.active_object
+    m = t.modifiers.new("arr", "ARRAY"); m.fit_type = "FIXED_COUNT"; m.count = 8
+    m.use_object_offset = True; m.offset_object = empty; m.use_relative_offset = False
+    add_camera_and_light()
+
+
+def build_dense_scatter_100() -> None:
+    reset_scene()
+    rng = random.Random(7777)
+    for _ in range(100):
+        bpy.ops.mesh.primitive_cube_add(size=rng.uniform(0.1, 0.3),
+                                         location=(rng.uniform(-3, 3),
+                                                   rng.uniform(-3, 3),
+                                                   rng.uniform(0, 1.5)))
+    add_camera_and_light()
+
+
+def build_text_long_word() -> None:
+    reset_scene()
+    bpy.ops.object.text_add(location=(-2.5, 0, 0))
+    txt = bpy.context.active_object
+    txt.data.body = "BLENDER3D"; txt.data.extrude = 0.2
+    add_camera_and_light()
+
+
+def build_text_multi_line() -> None:
+    reset_scene()
+    bpy.ops.object.text_add(location=(-1.5, 1, 0))
+    bpy.context.active_object.data.body = "HELLO"
+    bpy.context.active_object.data.extrude = 0.15
+    bpy.ops.object.text_add(location=(-1.5, -1, 0))
+    bpy.context.active_object.data.body = "WORLD"
+    bpy.context.active_object.data.extrude = 0.15
+    add_camera_and_light()
+
+
+def build_organic_blob() -> None:
+    """Suzanne with subsurface modifier — organic smoothed blob."""
+    reset_scene()
+    bpy.ops.mesh.primitive_monkey_add(size=2)
+    obj = bpy.context.active_object
+    s = obj.modifiers.new("sub", "SUBSURF"); s.levels = 3
+    add_camera_and_light()
+
+
+def build_bevel_torus() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_torus_add(major_radius=1.5, minor_radius=0.4)
+    obj = bpy.context.active_object
+    b = obj.modifiers.new("bev", "BEVEL"); b.width = 0.05; b.segments = 3
+    add_camera_and_light()
+
+
+def build_lattice_3d_dense() -> None:
+    reset_scene()
+    for x in range(-3, 4):
+        for y in range(-3, 4):
+            for z in range(0, 4):
+                bpy.ops.mesh.primitive_cube_add(size=0.3,
+                                                 location=(x*0.5, y*0.5, z*0.5))
+    add_camera_and_light()
+
+
+def build_nested_spheres() -> None:
+    """Three concentric spheres of decreasing size, transparent layering."""
+    reset_scene()
+    for r in (1.5, 1.0, 0.5):
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=r, segments=32, ring_count=16)
+    add_camera_and_light()
+
+
+def build_chain_of_links() -> None:
+    """Row of 6 torus links — chain-like."""
+    reset_scene()
+    for i in range(6):
+        bpy.ops.mesh.primitive_torus_add(major_radius=0.4, minor_radius=0.12,
+                                          location=(i * 0.7 - 1.75, 0, 0),
+                                          rotation=(0, math.radians(90 * (i % 2)), 0))
+    add_camera_and_light()
+
+
+def build_gear_like() -> None:
+    """Cylinder with cube teeth radially placed (mock gear)."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cylinder_add(radius=1.0, depth=0.3)
+    for i in range(12):
+        a = 2 * math.pi * i / 12
+        bpy.ops.mesh.primitive_cube_add(size=0.25,
+                                         location=(1.1 * math.cos(a), 1.1 * math.sin(a), 0))
+    add_camera_and_light()
+
+
+def build_brick_wall() -> None:
+    """Staggered brick pattern, 5 rows × 6-7 bricks."""
+    reset_scene()
+    for row in range(5):
+        offset = 0.5 if row % 2 else 0.0
+        for i in range(6):
+            bpy.ops.mesh.primitive_cube_add(
+                size=1.0,
+                location=(i * 1.05 - 2.5 + offset, 0, row * 0.55))
+            bpy.context.active_object.scale = (0.5, 0.25, 0.25)
+    add_camera_and_light()
+
+
+def build_table_4_legs() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 1))
+    bpy.context.active_object.scale = (1.0, 0.6, 0.05)
+    for x in (-0.85, 0.85):
+        for y in (-0.45, 0.45):
+            bpy.ops.mesh.primitive_cylinder_add(radius=0.07, depth=2,
+                                                 location=(x, y, 0))
+    add_camera_and_light()
+
+
+def build_chair_5_part() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1.4, location=(0, 0, 0.6))
+    bpy.context.active_object.scale = (1.0, 1.0, 0.1)
+    bpy.ops.mesh.primitive_cube_add(size=1.4, location=(0, -0.65, 1.4))
+    bpy.context.active_object.scale = (1.0, 0.07, 0.7)
+    for x, y in [(-0.6, -0.6), (0.6, -0.6), (-0.6, 0.6), (0.6, 0.6)]:
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=1.2, location=(x, y, 0))
+    add_camera_and_light()
+
+
+def build_house_assembly() -> None:
+    """Box body + triangular prism roof + small door + windows."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 1))
+    bpy.context.active_object.scale = (1.5, 1.0, 1.0)
+    bpy.ops.mesh.primitive_cone_add(vertices=4, radius1=1.8, depth=1.2,
+                                     location=(0, 0, 2.6))
+    bpy.context.active_object.rotation_euler = (0, 0, math.radians(45))
+    bpy.ops.mesh.primitive_cube_add(size=0.5, location=(0, -1.05, 0.5))
+    bpy.context.active_object.scale = (0.6, 0.05, 1.4)
+    for x in (-0.9, 0.9):
+        bpy.ops.mesh.primitive_cube_add(size=0.4, location=(x, -1.05, 1.4))
+        bpy.context.active_object.scale = (0.7, 0.05, 0.7)
+    add_camera_and_light()
+
+
+def build_tower_with_windows() -> None:
+    """Tall box with small window cubes punched in pattern."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1.4, location=(0, 0, 3))
+    bpy.context.active_object.scale = (0.6, 0.6, 4.5)
+    for z in range(1, 7):
+        for x in (-0.5, 0.5):
+            bpy.ops.mesh.primitive_cube_add(size=0.18, location=(x, -0.84, z * 0.9))
+    add_camera_and_light()
+
+
+def build_tree_silhouette() -> None:
+    """Cylinder trunk + 3 stacked icospheres for foliage."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.2, depth=2.0, location=(0, 0, 1))
+    for i, r in enumerate([0.9, 0.7, 0.5]):
+        bpy.ops.mesh.primitive_ico_sphere_add(radius=r, subdivisions=3,
+                                                location=(0, 0, 2.3 + i * 0.7))
+    add_camera_and_light()
+
+
+def build_dual_metaballs() -> None:
+    """Two metaballs of different sizes that merge into one organic mass."""
+    reset_scene()
+    bpy.ops.object.metaball_add(type="BALL", location=(-0.8, 0, 0.5))
+    bpy.context.active_object.scale = (1.2, 1.2, 1.2)
+    bpy.ops.object.metaball_add(type="BALL", location=(0.8, 0, 0.5))
+    bpy.context.active_object.scale = (0.9, 0.9, 0.9)
+    bpy.ops.object.metaball_add(type="ELLIPSOID", location=(0, 0, 1.2))
+    add_camera_and_light()
+
+
+def build_subdiv_monkey() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_monkey_add(size=2)
+    obj = bpy.context.active_object
+    s = obj.modifiers.new("sub", "SUBSURF"); s.levels = 4; s.render_levels = 4
+    add_camera_and_light()
+
+
+def build_array_cylinder_ring() -> None:
+    """Cylinders arranged in a ring via array+empty rotation (12 columns)."""
+    reset_scene()
+    bpy.ops.object.empty_add(location=(0, 0, 0))
+    empty = bpy.context.active_object
+    empty.rotation_euler[2] = math.radians(30)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.15, depth=1.5, location=(1.8, 0, 0))
+    t = bpy.context.active_object
+    m = t.modifiers.new("arr", "ARRAY"); m.fit_type = "FIXED_COUNT"; m.count = 12
+    m.use_object_offset = True; m.offset_object = empty; m.use_relative_offset = False
+    add_camera_and_light()
+
+
 # --- driver ----------------------------------------------------------------
 
 
@@ -529,6 +749,27 @@ SCENES: list[tuple[str, Callable[[], None]]] = [
     ("37_metaballs_blob",     build_metaballs_blob),
     ("38_screw_helix",        build_screw_helix),
     ("39_mirror_array",       build_mirror_array_combo),
+    ("40_cube_4x4_grid",      build_cube_4x4_grid),
+    ("41_sphere_6x6_grid",    build_sphere_6x6_grid),
+    ("42_curved_array_torus", build_curved_array_torus),
+    ("43_dense_scatter_100",  build_dense_scatter_100),
+    ("44_text_long_word",     build_text_long_word),
+    ("45_text_multi_line",    build_text_multi_line),
+    ("46_organic_blob",       build_organic_blob),
+    ("47_bevel_torus",        build_bevel_torus),
+    ("48_lattice_3d_dense",   build_lattice_3d_dense),
+    ("49_nested_spheres",     build_nested_spheres),
+    ("50_chain_of_links",     build_chain_of_links),
+    ("51_gear_like",          build_gear_like),
+    ("52_brick_wall",         build_brick_wall),
+    ("53_table_4_legs",       build_table_4_legs),
+    ("54_chair_5_part",       build_chair_5_part),
+    ("55_house_assembly",     build_house_assembly),
+    ("56_tower_with_windows", build_tower_with_windows),
+    ("57_tree_silhouette",    build_tree_silhouette),
+    ("58_dual_metaballs",     build_dual_metaballs),
+    ("59_subdiv_monkey",      build_subdiv_monkey),
+    ("60_array_cylinder_ring", build_array_cylinder_ring),
 ]
 
 
