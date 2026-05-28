@@ -83,21 +83,25 @@ Each turn emits exactly ONE action wrapped as:
 
 _QWEN_FREECAD_STRATEGY = """\
 
-REQUIRED STRATEGY (FreeCAD): Reconstruct GOAL_STATE by typing
-FreeCAD Python into the Python console:
+REQUIRED STRATEGY (FreeCAD): Reconstruct GOAL_STATE in three atomic
+compound actions — use these macros, NOT the underlying 4-step
+chains, to save VLM round-trips and avoid focus-loss failures:
 
-  1. {"type":"menu_navigate","path":["View","Panels","Python console"]}
-        — docks the console at the bottom (y≈930-1010).
-  2. {"type":"click","x":700,"y":990}
-        — gives keyboard focus to the console's input line.
-  3. {"type":"type","text":"<one-line Python that builds the goal shape>"}
-        — see template per shape below. Single-line only; no \\n.
-        REMEMBER: estimate dimensions from the goal image.
-  4. {"type":"key","key":"enter"}        — executes the code.
-  5. {"type":"focus_viewport"}           — transfers focus to viewport.
-  6. {"type":"key","key":"0"}            — isometric camera.
-  7. {"type":"key","key":"v"} then {"type":"key","key":"f"} — fit all.
-  8. {"type":"terminate"}                — when CURRENT matches GOAL.
+  1. {"type":"python_eval","code":"<one-line Python that builds the goal>"}
+        — Atomic: opens the Python console (idempotent), focuses its
+          input field, types `code`, presses Enter. Replaces the
+          (menu_navigate + click + type + key) prelude with ONE action.
+          Single-line code only; no \\n.
+          REMEMBER: estimate dimensions from the goal image.
+  2. {"type":"frame_view"}
+        — Atomic: focuses viewport, switches to isometric (key "0"),
+          fit-all (keys "v","f"). Replaces (focus_viewport + 3 keys).
+  3. {"type":"terminate"}
+        — when CURRENT_STATE matches GOAL_STATE.
+
+If you need to iterate the geometry (wrong shape on the first try),
+emit another `python_eval` with a corrected `code`; the console
+keeps a session, so prior variables persist.
 
 Python templates (adjust the numbers per the goal image):
 

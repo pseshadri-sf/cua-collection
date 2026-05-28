@@ -15,11 +15,15 @@ VALID_TYPES = {
     "move_to", "click", "double_click", "right_click",
     "type", "key", "hotkey", "scroll", "sleep", "terminate",
     "menu_navigate", "switch_workbench", "focus_viewport",
+    "python_eval", "frame_view",
 }
 
 
 # Where to click to give the 3D viewport keyboard focus on Xvfb/Qt.
 VIEWPORT_FOCUS_XY: tuple[int, int] = (1100, 540)
+
+# Python console input field after View>Panels>Python console docks it.
+PYTHON_CONSOLE_INPUT_XY: tuple[int, int] = (700, 990)
 
 
 # Pre-measured click/hover sequences for FreeCAD 0.19 nested menus on
@@ -136,6 +140,22 @@ You may emit exactly one action per turn, formatted as JSON. Available actions:
       if any docked panel (Python console, Combo View, etc.) might
       currently hold focus — otherwise the keystrokes are typed into
       that panel instead of acting on the 3D view.
+
+  {"type": "python_eval", "code": "doc=App.newDocument();import Part;..."}
+      Compound macro (FreeCAD equivalent of Blender's python_eval):
+      open the Python console if not already open, focus its input
+      field, type `code`, press Enter. Replaces the 4-step prelude
+      (menu_navigate + click + type + key) with one atomic action —
+      saves 3 VLM round-trips per reconstruction attempt and avoids
+      the focus-loss failure modes between separate steps.
+      The console state is idempotent: if it's already docked, the
+      menu_navigate step is a no-op and we just refocus the input.
+
+  {"type": "frame_view"}
+      Compound macro: focus viewport, switch to isometric (key "0"),
+      then fit-all (keys "v" then "f"). Atomic 4-step view setup
+      that the agent otherwise emits as separate steps after every
+      reconstruction.
 """
 
 
@@ -279,6 +299,48 @@ class ActionExecutor:
         self._pg.moveTo(x, y, duration=0.15)
         self._pg.click()
         return ExecutionResult(True, post_action_sleep=0.5)
+
+    def _do_python_eval(self, a: dict) -> ExecutionResult:
+        """Atomic: open console (idempotent) + focus input + type code + Enter.
+
+        Collapses the menu_navigate→click→type→key chain into one action,
+        matching Blender's existing python_eval semantics.
+        """
+        code = a.get("code")
+        if not isinstance(code, str) or not code.strip():
+            return ExecutionResult(False, "'python_eval' requires non-empty string 'code'")
+        # 1. Open the Python console (idempotent — Qt no-ops if already docked).
+        seq = MENU_PATHS.get(("View", "Panels", "Python console"))
+        if seq is not None:
+            for kind, x, y, delay in seq:
+                if kind == "click":
+                    self._pg.moveTo(x, y, duration=0.15); self._pg.click()
+                elif kind == "hover":
+                    self._pg.moveTo(x, y, duration=0.15)
+                time.sleep(delay)
+        # 2. Focus the console's input field.
+        cx, cy = PYTHON_CONSOLE_INPUT_XY
+        self._pg.moveTo(cx, cy, duration=0.15)
+        self._pg.click()
+        time.sleep(0.3)
+        # 3. Type the code.
+        self._pg.typewrite(code, interval=0.01)
+        time.sleep(0.2)
+        # 4. Execute.
+        self._pg.press("enter")
+        # Give Mesa software-OpenGL ~1.5s to repaint the viewport with new geometry.
+        return ExecutionResult(True, post_action_sleep=1.5)
+
+    def _do_frame_view(self, a: dict) -> ExecutionResult:
+        """Atomic: focus viewport + isometric (0) + fit-all (v, f)."""
+        x, y = VIEWPORT_FOCUS_XY
+        self._pg.moveTo(x, y, duration=0.15)
+        self._pg.click()
+        time.sleep(0.3)
+        self._pg.press("0"); time.sleep(0.2)
+        self._pg.press("v"); time.sleep(0.15)
+        self._pg.press("f")
+        return ExecutionResult(True, post_action_sleep=0.6)
 
     @staticmethod
     def _xy(a: dict) -> tuple[int, int]:
