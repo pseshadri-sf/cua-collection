@@ -148,7 +148,9 @@ class AgentTrajectoryRunner:
                  freecad_binary: str | None = None,
                  freecad_post_launch_delay: float = 4.0,
                  post_action_delay: float = 0.6,
-                 history_window: int = 4):
+                 history_window: int = 4,
+                 escalate_at_step: int = 0,
+                 escalate_to_effort: str = "high"):
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.vlm = vlm
@@ -158,6 +160,10 @@ class AgentTrajectoryRunner:
         self.freecad_post_launch_delay = freecad_post_launch_delay
         self.post_action_delay = post_action_delay
         self.history_window = history_window
+        # Adaptive reasoning: when the agent reaches `escalate_at_step` without
+        # self-terminating, bump the VLM's reasoning_effort. 0 = disabled.
+        self.escalate_at_step = escalate_at_step
+        self.escalate_to_effort = escalate_to_effort
 
     def run(self) -> TrajectoryResult:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,6 +229,22 @@ class AgentTrajectoryRunner:
             ))
 
             for step_idx in range(1, self.max_steps + 1):
+                # Adaptive reasoning escalation: if the agent has gotten this
+                # far without self-terminating, it's likely stuck — bump the
+                # reasoning effort so subsequent calls think harder.
+                if (self.escalate_at_step
+                        and step_idx > self.escalate_at_step
+                        and self.vlm.reasoning_effort != self.escalate_to_effort):
+                    prev = self.vlm.reasoning_effort
+                    self.vlm.reasoning_effort = self.escalate_to_effort
+                    print(f"[escalate] step {step_idx}: reasoning_effort "
+                          f"{prev!r} -> {self.escalate_to_effort!r}",
+                          flush=True)
+                # Persist trajectory.json incrementally so a kill/crash mid-run
+                # still leaves a usable record of all completed steps.
+                self._write_json(json_path, steps, video_path=video_path,
+                                 terminated_by="in_progress", error=None,
+                                 model=self.vlm.model)
                 current_png = shots_dir / f"step_{step_idx:02d}_before.png"
                 shot = capture.capture(current_png.name)
                 # ScreenshotCapture builds its own name under shots_dir; rename.

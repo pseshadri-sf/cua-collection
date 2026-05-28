@@ -43,6 +43,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", action="append", default=None)
     parser.add_argument("--ignore-provider", action="append", default=None)
     parser.add_argument("--strict-provider", action="store_true")
+    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"),
+                        default="high")
+    parser.add_argument("--image-max-dim", type=int, default=1920)
+    parser.add_argument("--escalate-at-step", type=int, default=0,
+                        help="If >0, escalate reasoning effort after N steps.")
+    parser.add_argument("--escalate-to-effort", choices=("low", "medium", "high"),
+                        default="high")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -58,12 +65,16 @@ def main(argv: list[str] | None = None) -> int:
         provider_order=args.provider,
         provider_ignore=args.ignore_provider,
         allow_fallbacks=not args.strict_provider,
+        reasoning_effort=args.reasoning_effort,
+        image_max_dim=args.image_max_dim,
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),
         output_dir=Path(args.output_dir),
         vlm=vlm,
         max_steps=args.max_steps,
+        escalate_at_step=args.escalate_at_step,
+        escalate_to_effort=args.escalate_to_effort,
     )
     result = runner.run()
 

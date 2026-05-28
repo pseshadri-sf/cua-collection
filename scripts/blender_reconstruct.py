@@ -72,7 +72,8 @@ def _measure_scene() -> dict:
         total_e += len(mesh.edges)
         total_f += len(mesh.polygons)
         total_surface += sum(p.area for p in mesh.polygons)
-        for v in mesh.bound_box:
+        # bound_box is an Object attribute, not Mesh.
+        for v in obj.bound_box:
             wp = mw @ __import__("mathutils").Vector(v)
             xmin = min(xmin, wp.x); xmax = max(xmax, wp.x)
             ymin = min(ymin, wp.y); ymax = max(ymax, wp.y)

@@ -43,7 +43,9 @@ class OpenRouterVLMClient:
                  timeout: float = 120.0,
                  provider_order: list[str] | None = None,
                  provider_ignore: list[str] | None = None,
-                 allow_fallbacks: bool = True):
+                 allow_fallbacks: bool = True,
+                 reasoning_effort: str = "high",
+                 image_max_dim: int = 1920):
         if not api_key:
             raise ValueError("OpenRouter API key is required")
         self.api_key = api_key
@@ -56,6 +58,14 @@ class OpenRouterVLMClient:
         self.provider_order = provider_order
         self.provider_ignore = provider_ignore
         self.allow_fallbacks = allow_fallbacks
+        if reasoning_effort not in ("low", "medium", "high"):
+            raise ValueError(f"reasoning_effort must be low/medium/high, got {reasoning_effort!r}")
+        self.reasoning_effort = reasoning_effort
+        # Longest image edge (px) sent to the VLM. PNG screenshots from
+        # 1920x1080 Xvfb are downscaled (preserving aspect) if either
+        # dimension exceeds this. Smaller = fewer vision tokens =
+        # faster + cheaper, at the cost of fine UI detail.
+        self.image_max_dim = image_max_dim
 
     # --- public API --------------------------------------------------------
 
@@ -96,7 +106,7 @@ class OpenRouterVLMClient:
             # to think AND emit the JSON action object afterwards.
             "max_tokens": 8192,
             # OpenRouter rejects passing both effort and max_tokens; pick one.
-            "reasoning": {"effort": "high"},
+            "reasoning": {"effort": self.reasoning_effort},
             # We want JSON back; many models honor this hint.
             "response_format": {"type": "json_object"},
         }
@@ -202,9 +212,21 @@ class OpenRouterVLMClient:
         delay = min(2 ** attempt, 30)
         time.sleep(delay)
 
-    @staticmethod
-    def _image_block(png_path: Path) -> dict:
-        data = png_path.read_bytes()
+    def _image_block(self, png_path: Path) -> dict:
+        # Downscale large screenshots to cut vision-token count (a 1920x1080
+        # PNG roughly doubles the prefill cost vs. a 1024x576). If the source
+        # is already smaller than image_max_dim, we keep it untouched.
+        from PIL import Image  # local import: pillow may not always be installed
+        import io
+        img = Image.open(png_path)
+        if max(img.size) > self.image_max_dim:
+            img = img.copy()
+            img.thumbnail((self.image_max_dim, self.image_max_dim), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            data = buf.getvalue()
+        else:
+            data = png_path.read_bytes()
         b64 = base64.b64encode(data).decode("ascii")
         return {
             "type": "image_url",

@@ -53,6 +53,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict-provider", action="store_true",
                         help="Disable fallback to other providers if the "
                              "preferred ones fail.")
+    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"),
+                        default="high",
+                        help="OpenRouter reasoning.effort. low = much faster, "
+                             "fewer tokens; high = more deliberative.")
+    parser.add_argument("--image-max-dim", type=int, default=1920,
+                        help="Longest screenshot edge (px) sent to the VLM. "
+                             "1024 cuts vision tokens ~3x vs the default 1920.")
+    parser.add_argument("--escalate-at-step", type=int, default=0,
+                        help="If >0, switch reasoning effort to "
+                             "--escalate-to-effort once the agent has taken "
+                             "this many steps without self-terminating. "
+                             "0 = no escalation.")
+    parser.add_argument("--escalate-to-effort", choices=("low", "medium", "high"),
+                        default="high",
+                        help="Reasoning effort to switch to on escalation.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -70,12 +85,16 @@ def main(argv: list[str] | None = None) -> int:
         provider_order=args.provider,
         provider_ignore=args.ignore_provider,
         allow_fallbacks=not args.strict_provider,
+        reasoning_effort=args.reasoning_effort,
+        image_max_dim=args.image_max_dim,
     )
     runner = AgentTrajectoryRunner(
         goal_png=Path(args.goal),
         output_dir=Path(args.output_dir),
         vlm=vlm,
         max_steps=args.max_steps,
+        escalate_at_step=args.escalate_at_step,
+        escalate_to_effort=args.escalate_to_effort,
     )
     result = runner.run()
 
