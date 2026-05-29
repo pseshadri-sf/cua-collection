@@ -148,7 +148,8 @@ class AgentTrajectoryRunner:
                  freecad_binary: str | None = None,
                  freecad_post_launch_delay: float = 4.0,
                  post_action_delay: float = 0.6,
-                 history_window: int = 4,
+                 history_window: int = 10,
+                 loop_kill_repeats: int = 3,
                  escalate_at_step: int = 0,
                  escalate_to_effort: str = "high"):
         self.goal_png = Path(goal_png).resolve()
@@ -160,6 +161,12 @@ class AgentTrajectoryRunner:
         self.freecad_post_launch_delay = freecad_post_launch_delay
         self.post_action_delay = post_action_delay
         self.history_window = history_window
+        # Loop-kill: if the agent emits `loop_kill_repeats` consecutive
+        # identical canonical action payloads, force-terminate. Set to 0
+        # to disable. Default 3 — diagnosed in the sweep120 analysis as
+        # the dominant failure mode: 31/31 max_steps cases were absorbing
+        # loops of 8+ identical payloads.
+        self.loop_kill_repeats = loop_kill_repeats
         # Adaptive reasoning: when the agent reaches `escalate_at_step` without
         # self-terminating, bump the VLM's reasoning_effort. 0 = disabled.
         self.escalate_at_step = escalate_at_step
@@ -327,6 +334,22 @@ class AgentTrajectoryRunner:
                     # Don't terminate on a single bad action — let the agent
                     # observe the unchanged state and try again.
                     continue
+
+                # Loop-kill: if the last N executed actions all canonicalise
+                # to the same payload, the agent is in an absorbing state.
+                # Force-terminate to save VLM cost and surface the failure
+                # mode clearly (vs. silently hitting max_steps).
+                if self.loop_kill_repeats >= 2:
+                    tail = [json.dumps(s.action, sort_keys=True)
+                            for s in steps[-self.loop_kill_repeats:]
+                            if s.action is not None]
+                    if (len(tail) == self.loop_kill_repeats
+                            and len(set(tail)) == 1):
+                        print(f"[loop-kill] step {step_idx}: identical action "
+                              f"emitted {self.loop_kill_repeats}x in a row — terminating",
+                              flush=True)
+                        terminated_by = "agent_loop_detected"
+                        break
 
             # Give the last action ~1s of video tail so its consequence is visible.
             time.sleep(1.0)

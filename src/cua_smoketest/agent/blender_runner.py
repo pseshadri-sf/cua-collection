@@ -142,7 +142,8 @@ class BlenderAgentTrajectoryRunner:
                  blender_binary: str | None = None,
                  blender_post_launch_delay: float = 8.0,
                  post_action_delay: float = 0.6,
-                 history_window: int = 4,
+                 history_window: int = 10,
+                 loop_kill_repeats: int = 3,
                  escalate_at_step: int = 0,
                  escalate_to_effort: str = "high"):
         self.goal_png = Path(goal_png).resolve()
@@ -154,6 +155,9 @@ class BlenderAgentTrajectoryRunner:
         self.blender_post_launch_delay = blender_post_launch_delay
         self.post_action_delay = post_action_delay
         self.history_window = history_window
+        # Loop-kill: terminate when N consecutive identical action payloads
+        # are emitted. See AgentTrajectoryRunner for sweep120 diagnosis.
+        self.loop_kill_repeats = loop_kill_repeats
         # Adaptive reasoning: bump VLM reasoning_effort once the agent has
         # taken `escalate_at_step` steps without self-terminating. 0 = off.
         self.escalate_at_step = escalate_at_step
@@ -307,6 +311,19 @@ class BlenderAgentTrajectoryRunner:
                     usage=resp.usage,
                     exec_error=exec_result.error,
                 ))
+
+                # Loop-kill: same payload N times in a row → force-terminate.
+                if self.loop_kill_repeats >= 2:
+                    tail = [json.dumps(s.action, sort_keys=True)
+                            for s in steps[-self.loop_kill_repeats:]
+                            if s.action is not None]
+                    if (len(tail) == self.loop_kill_repeats
+                            and len(set(tail)) == 1):
+                        print(f"[loop-kill] step {step_idx}: identical action "
+                              f"emitted {self.loop_kill_repeats}x in a row — terminating",
+                              flush=True)
+                        terminated_by = "agent_loop_detected"
+                        break
 
             time.sleep(1.0)
         except Exception as exc:  # noqa: BLE001
