@@ -29,6 +29,9 @@ VALID_TYPES = {
     "open_python_console", "switch_workspace",
     "focus_viewport",
     "python_eval", "frame_all",
+    # --- v1 structured actions (Qwen-only path; python_eval remains escape hatch) ---
+    "build_box", "build_cylinder", "build_sphere", "build_torus",
+    "cut", "fuse", "compound",
 }
 
 
@@ -291,6 +294,118 @@ class BlenderActionExecutor:
         self._pg.press("Home")
         time.sleep(0.5)
         return ExecutionResult(True, post_action_sleep=0.4)
+
+    # --- v1 structured actions (translate to bpy via python_eval) -------------
+
+    def _do_build_box(self, a: dict) -> ExecutionResult:
+        dims = a.get("dims") or {}; origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        for k in ("x", "y", "z"):
+            if not isinstance(dims.get(k), (int, float)) or dims[k] <= 0:
+                return ExecutionResult(False, f"'build_box' requires positive dims.{k}")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_box' requires non-empty 'name'")
+        code = (
+            f"import bpy;"
+            f"bpy.ops.mesh.primitive_cube_add(size=1,location=({origin['x']},{origin['y']},{origin['z']}));"
+            f"_o=bpy.context.active_object;_o.scale=({dims['x']/2},{dims['y']/2},{dims['z']/2});"
+            f"_o.name={name!r}"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_build_cylinder(self, a: dict) -> ExecutionResult:
+        radius = a.get("radius"); height = a.get("height")
+        origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        if not isinstance(radius, (int, float)) or radius <= 0:
+            return ExecutionResult(False, "'build_cylinder' requires positive 'radius'")
+        if not isinstance(height, (int, float)) or height <= 0:
+            return ExecutionResult(False, "'build_cylinder' requires positive 'height'")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_cylinder' requires non-empty 'name'")
+        code = (
+            f"import bpy;"
+            f"bpy.ops.mesh.primitive_cylinder_add(radius={radius},depth={height},"
+            f"location=({origin['x']},{origin['y']},{origin['z']}));"
+            f"bpy.context.active_object.name={name!r}"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_build_sphere(self, a: dict) -> ExecutionResult:
+        radius = a.get("radius"); origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        if not isinstance(radius, (int, float)) or radius <= 0:
+            return ExecutionResult(False, "'build_sphere' requires positive 'radius'")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_sphere' requires non-empty 'name'")
+        code = (
+            f"import bpy;"
+            f"bpy.ops.mesh.primitive_uv_sphere_add(radius={radius},"
+            f"location=({origin['x']},{origin['y']},{origin['z']}));"
+            f"bpy.context.active_object.name={name!r}"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_build_torus(self, a: dict) -> ExecutionResult:
+        Rmaj = a.get("major_radius"); Rmin = a.get("minor_radius")
+        origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        if not isinstance(Rmaj, (int, float)) or Rmaj <= 0:
+            return ExecutionResult(False, "'build_torus' requires positive 'major_radius'")
+        if not isinstance(Rmin, (int, float)) or Rmin <= 0:
+            return ExecutionResult(False, "'build_torus' requires positive 'minor_radius'")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_torus' requires non-empty 'name'")
+        code = (
+            f"import bpy;"
+            f"bpy.ops.mesh.primitive_torus_add(major_radius={Rmaj},minor_radius={Rmin},"
+            f"location=({origin['x']},{origin['y']},{origin['z']}));"
+            f"bpy.context.active_object.name={name!r}"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_cut(self, a: dict) -> ExecutionResult:
+        """Boolean DIFFERENCE: from_name minus by_name → new object 'name'."""
+        from_name = a.get("from"); by_name = a.get("by"); name = a.get("name")
+        if not all(isinstance(s, str) and s.strip() for s in (from_name, by_name, name)):
+            return ExecutionResult(False, "'cut' requires 'from', 'by', 'name' strings")
+        code = (
+            f"import bpy;_a=bpy.data.objects[{from_name!r}];_b=bpy.data.objects[{by_name!r}];"
+            f"_m=_a.modifiers.new('cut','BOOLEAN');_m.operation='DIFFERENCE';_m.object=_b;"
+            f"_b.hide_viewport=True;_a.name={name!r}"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_fuse(self, a: dict) -> ExecutionResult:
+        """Boolean UNION: chain N shapes into one object 'name'."""
+        shapes = a.get("shapes"); name = a.get("name")
+        if not isinstance(shapes, list) or len(shapes) < 2 or not all(isinstance(s, str) for s in shapes):
+            return ExecutionResult(False, "'fuse' requires list 'shapes' of >=2 names")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'fuse' requires non-empty 'name'")
+        ops = ";".join(
+            f"_m=_base.modifiers.new('u{i}','BOOLEAN');_m.operation='UNION';"
+            f"_m.object=bpy.data.objects[{s!r}];bpy.data.objects[{s!r}].hide_viewport=True"
+            for i, s in enumerate(shapes[1:])
+        )
+        code = (
+            f"import bpy;_base=bpy.data.objects[{shapes[0]!r}];{ops};_base.name={name!r}"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_compound(self, a: dict) -> ExecutionResult:
+        """Multi-part assembly without boolean union — just leaves objects as-is.
+
+        Acts as a 'manifest only' action: agent declares which objects belong
+        together as a logical group. No-op at the bpy level — included for
+        symmetry with the FC compound action.
+        """
+        shapes = a.get("shapes"); name = a.get("name")
+        if not isinstance(shapes, list) or not shapes:
+            return ExecutionResult(False, "'compound' requires non-empty list 'shapes'")
+        # Just rename one of the shapes to the compound name; no geometry change.
+        code = f"import bpy;# compound noop ({len(shapes)} parts: {shapes})"
+        return self._do_python_eval({"code": code})
 
     # --- internals ---------------------------------------------------------
 

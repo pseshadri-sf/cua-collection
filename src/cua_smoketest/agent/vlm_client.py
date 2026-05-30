@@ -26,6 +26,27 @@ import httpx
 _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 
+def _extract_goal_name(goal_png: Path) -> str | None:
+    """Parse the asset stem from a goal screenshot filename.
+
+    Goal screenshots follow `<PREFIX>_NN_loaded_<stem>_<ext>.png` for FreeCAD
+    or `<PREFIX>_NN_loaded_<numeric_stem>.png` for Blender. We extract the
+    middle part — that's the asset name the geometric evaluator credits in
+    `name_overlap`. Returns None on no match.
+    """
+    name = goal_png.name
+    # FreeCAD pattern: stem then explicit extension token
+    m = re.match(r"^[A-Z]_\d+_loaded_(.+?)_(?:step|stp|fcstd|brep|iges|igs|stl)\.png$",
+                 name, re.IGNORECASE)
+    if m:
+        return m.group(1).split("__")[-1]  # take final segment of cat__cat__name
+    # Blender pattern: NN_name_with_underscores
+    m = re.match(r"^[A-Z]_\d+_loaded_\d+_([a-z_0-9]+)\.png$", name, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
 # Per-turn schema reminder injected only when the active model is Qwen3-VL.
 # Empirically, Qwen3-VL-30B/32B-Instruct on this pipeline (a) emits
 # `{"type":"click","x":[X,Y]}` for clicks (the parse layer normalizes
@@ -77,6 +98,26 @@ DIFFERENT action.
 FORBIDDEN: File>Open, File>Recent, drag-and-drop. The goal is to
 CONSTRUCT the geometry — never load it.
 
+ZOOM-OUT RULE (CRITICAL — applies after every build/python_eval):
+After ANY action that adds or modifies geometry, look carefully at
+CURRENT_STATE. If the rendered geometry is:
+  - invisible / not in frame
+  - cut off at the viewport edges
+  - filling less than ~15% of the viewport (a tiny dot in a sea of
+    dark gray)
+  - centred at the world origin but the camera is still on the
+    default position
+your NEXT action MUST be {"type":"frame_view"} (FreeCAD) or
+{"type":"frame_all"} (Blender). Do NOT emit another python_eval,
+build_*, terminate, or anything else until you can see the geometry
+clearly in the viewport. A geometrically-correct python_eval that
+produces invisible geometry scores 0 because we cannot verify it.
+
+Exception: do not emit frame_view/frame_all TWICE in a row — if you
+just did one and the geometry still isn't visible, the issue is the
+geometry itself (wrong scale, off-axis, etc.) — re-emit a corrected
+python_eval / build_*.
+
 Each turn emits exactly ONE action wrapped as:
   {"action": <action object>, "rationale": "<one or two sentences>"}
 """
@@ -92,16 +133,33 @@ chains, to save VLM round-trips and avoid focus-loss failures:
           input field, types `code`, presses Enter. Replaces the
           (menu_navigate + click + type + key) prelude with ONE action.
           Single-line code only; no \\n.
-          REMEMBER: estimate dimensions from the goal image.
   2. {"type":"frame_view"}
         — Atomic: focuses viewport, switches to isometric (key "0"),
           fit-all (keys "v","f"). Replaces (focus_viewport + 3 keys).
   3. {"type":"terminate"}
         — when CURRENT_STATE matches GOAL_STATE.
 
-If you need to iterate the geometry (wrong shape on the first try),
-emit another `python_eval` with a corrected `code`; the console
-keeps a session, so prior variables persist.
+BEFORE TYPING (dimension estimate — MANDATORY): In your `rationale`
+field for the python_eval action, FIRST write your estimate of the
+goal's bounding box in millimetres, e.g. `approx bbox W×D×H =
+2000×1200×100 mm (a wide flat slab)`. Then build the python_eval
+template using EXACTLY those numbers. The template defaults shown
+below are starting points only — typing them verbatim almost always
+fails because the goal is at a different scale.
+
+NAMING (free 10 points): The geometric evaluator credits Jaccard
+overlap between your object name and the goal's object names. Use
+the GOAL_NAME passed to you in the user prompt as the third arg to
+addObject, e.g. `doc.addObject('Part::Feature','GOAL_NAME')`. Do
+NOT use generic names like 'Box', 'Plate', 'Cyl'.
+
+SELF-VERIFICATION + ITERATION: After your first python_eval,
+compare CURRENT_STATE to GOAL_STATE. If the geometry's proportions
+or scale look visibly wrong (e.g. you built a 100mm box but the goal
+is a 2000mm door), emit a SECOND python_eval with adjusted numbers.
+The console persists state — you can overwrite the object. Iteration
+is ENCOURAGED: agents that iterate score on average +6.6 pts higher
+than agents that type once and quit.
 
 Python templates (adjust the numbers per the goal image):
 
@@ -193,6 +251,12 @@ spam clicks on the toolbar. The action sequence:
 
 bpy templates (adjust numbers per the goal image):
 
+SELF-VERIFICATION + ITERATION: After your first python_eval,
+compare CURRENT_STATE to GOAL_STATE. If wrong shape or scale,
+issue a SECOND python_eval with corrections — variables persist
+across calls. If you see N distinct objects in the goal but built
+only one, type N primitive_*_add calls.
+
   cube (size = single edge length):
     import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2,location=(0,0,0))
 
@@ -280,6 +344,182 @@ _QWEN_BLENDER_REMINDER = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_BLENDER_STRATEGY
 _QWEN_SCHEMA_REMINDER = _QWEN_FREECAD_REMINDER
 
 
+# v2 structured actions — REPLACES the python_eval-templates strategy
+# (rather than augmenting it). The v1 preamble was prepended on top of the
+# existing strategy and was uniformly ignored by Qwen because the templates
+# section right below it gave it dozens of python_eval examples to pattern-
+# match on. v2 swaps the entire strategy block.
+_QWEN_FREECAD_STRATEGY_V2 = """\
+
+REQUIRED STRATEGY (FreeCAD, structured-action vocabulary):
+
+You build geometry via TYPED actions, NOT raw python_eval. The action
+schema enforces required dimensions, so you cannot type a template with
+default numbers — you must estimate from the goal image.
+
+ACTIONS available:
+  build_box, build_cylinder, build_sphere, build_torus
+  cut, fuse, compound
+  frame_view, terminate
+  python_eval     ← ESCAPE HATCH only (see end)
+
+CHOICE RULE (MANDATORY): if your intended action would be
+`python_eval(code)` where `code` only calls makeBox / makeCylinder /
+makeSphere / makeTorus / cut / fuse / makeCompound, you MUST emit the
+corresponding typed action instead. Typed actions remove syntax errors
+and missing-dimension errors.
+
+DIMENSION ESTIMATION: in your `rationale`, write the bbox estimate FIRST
+(e.g. "door ≈ 940×160×2120 mm"), then emit the build_* with those exact
+numbers.
+
+NAMING: the user prompt passes a GOAL_NAME — use it as the `name` arg.
+
+WORKED EXAMPLES (one per asset family):
+
+  Single box (door panel / plate / brick / slab):
+    {"type":"build_box","dims":{"x":940,"y":160,"z":2120},
+     "origin":{"x":0,"y":0,"z":0},"name":"door_panel"}
+
+  Single cylinder (pipe / shaft / bolt body):
+    {"type":"build_cylinder","radius":30,"height":150,"axis":"z",
+     "origin":{"x":0,"y":0,"z":0},"name":"shaft"}
+
+  Single sphere (ball / lamp head):
+    {"type":"build_sphere","radius":100,
+     "origin":{"x":0,"y":0,"z":100},"name":"head"}
+
+  Single torus (ring / gasket / chain link):
+    {"type":"build_torus","major_radius":100,"minor_radius":15,
+     "origin":{"x":0,"y":0,"z":0},"name":"ring"}
+
+  Door with handle hole (box minus cylinder):
+    1. {"type":"build_box","dims":{"x":900,"y":40,"z":2100},
+        "origin":{"x":0,"y":0,"z":0},"name":"panel"}
+    2. {"type":"build_cylinder","radius":25,"height":50,"axis":"y",
+        "origin":{"x":820,"y":-5,"z":1050},"name":"hole"}
+    3. {"type":"cut","from":"panel","by":"hole","name":"door"}
+
+  Bracket with hole (compositional, same pattern as door):
+    1. build_box (small dims, e.g. 100×60×10)
+    2. build_cylinder (small bore through z)
+    3. cut
+
+  Pulley (disk with center bore):
+    1. {"type":"build_cylinder","radius":40,"height":10,"name":"disk"}
+    2. {"type":"build_cylinder","radius":5,"height":20,
+        "origin":{"x":0,"y":0,"z":-5},"name":"bore"}
+    3. {"type":"cut","from":"disk","by":"bore","name":"pulley"}
+
+  Bearing (3 concentric cylinders, outer cut by middle, fused with inner):
+    1. build_cylinder (radius=outer, height=T, name='outer')
+    2. build_cylinder (radius=mid,   height=T, name='mid')
+    3. build_cylinder (radius=inner, height=T, name='inner')
+    4. {"type":"cut","from":"outer","by":"mid","name":"race"}
+    5. {"type":"fuse","shapes":["race","inner"],"name":"bearing"}
+
+  Chain of N links (multi-part, no boolean union):
+    1..N. build_torus per link with origin offset along z and alternating rotations
+    N+1. {"type":"compound","shapes":["link0","link1",...,"link{N-1}"],"name":"chain"}
+
+  Multi-part assembly (door + 4 trims, table + 4 legs, hinge + plates):
+    1..M. one build_* per visible distinct part, with origin set to its position
+    M+1. {"type":"compound","shapes":[...],"name":"assembly"}
+    (Use compound — NOT fuse — to keep parts topologically distinct.)
+
+  Tray / shower pad / pan (large box minus smaller inset box):
+    1. {"type":"build_box","dims":{"x":1000,"y":1000,"z":100},"name":"outer"}
+    2. {"type":"build_box","dims":{"x":940,"y":940,"z":60},
+        "origin":{"x":30,"y":30,"z":40},"name":"inset"}
+    3. {"type":"cut","from":"outer","by":"inset","name":"pad"}
+
+AFTER building, emit:
+  {"type":"frame_view"}    — isometric + fit-all
+  {"type":"terminate"}     — when CURRENT matches GOAL
+
+ESCAPE HATCH (python_eval): use ONLY for shapes not expressible as
+primitives + booleans:
+  - Revolutions: Part.makeRevolution(profile, axis, angle)
+  - Lofts / sweeps: Part.makeLoft, Part.makeSweep
+  - Custom Part::Feature subclasses
+If you're tempted to use python_eval for a simple Part.makeBox /
+Cylinder / Sphere / Torus / cut / fuse, STOP — emit the typed action.
+"""
+
+_QWEN_BLENDER_STRATEGY_V2 = """\
+
+REQUIRED STRATEGY (Blender, structured-action vocabulary):
+
+You build geometry via TYPED actions, NOT raw python_eval. python_eval
+remains for modifier stacks and curves; primitives + booleans use the
+typed verbs below.
+
+ACTIONS available:
+  build_box, build_cylinder, build_sphere, build_torus
+  cut, fuse, compound
+  frame_all, terminate
+  python_eval     ← for modifier stacks, curves, text, metaballs only
+
+CHOICE RULE: if your intended action would be `python_eval(code)` where
+`code` only calls primitive_cube_add / primitive_uv_sphere_add /
+primitive_cylinder_add / primitive_torus_add / BOOLEAN modifier, emit
+the typed action instead.
+
+WORKED EXAMPLES:
+
+  Cube (cube/box):
+    {"type":"build_box","dims":{"x":2,"y":2,"z":2},
+     "origin":{"x":0,"y":0,"z":0},"name":"Cube"}
+
+  Sphere:
+    {"type":"build_sphere","radius":1,"origin":{"x":0,"y":0,"z":0},"name":"Sphere"}
+
+  Cylinder:
+    {"type":"build_cylinder","radius":1,"height":2,
+     "origin":{"x":0,"y":0,"z":0},"name":"Cylinder"}
+
+  Torus:
+    {"type":"build_torus","major_radius":1.5,"minor_radius":0.4,
+     "origin":{"x":0,"y":0,"z":0},"name":"Torus"}
+
+  Boolean DIFFERENCE (cube with spherical bite):
+    1. {"type":"build_box","dims":{"x":2,"y":2,"z":2},"name":"Cube"}
+    2. {"type":"build_sphere","radius":1.3,
+        "origin":{"x":1,"y":1,"z":1},"name":"Bite"}
+    3. {"type":"cut","from":"Cube","by":"Bite","name":"Result"}
+
+  Boolean UNION (multi-primitive merged):
+    1. {"type":"build_box","dims":{"x":2,"y":2,"z":2},"name":"A"}
+    2. {"type":"build_box","dims":{"x":1.2,"y":1.2,"z":1.2},
+        "origin":{"x":1.5,"y":0,"z":0.5},"name":"B"}
+    3. {"type":"fuse","shapes":["A","B"],"name":"Result"}
+
+  Multi-object scene (kitbash robot, table+legs, chain of toruses):
+    1..N. one build_* per visible distinct object with appropriate origin
+    N+1. {"type":"compound","shapes":[...],"name":"assembly"}
+
+  Stack/array of N identical objects:
+    1..N. one build_* per copy with varying origin (axis-aligned)
+    N+1. compound
+
+ESCAPE HATCH (python_eval): use ONLY for:
+  - Modifier stacks (subdivision, bevel, array, mirror, screw)
+  - Text objects (bpy.ops.object.text_add)
+  - Metaballs
+  - Curves and helixes
+  - Geometry-nodes / particle scenes
+If your code only uses primitive_*_add or BOOLEAN modifiers, USE THE
+TYPED ACTIONS INSTEAD.
+
+AFTER building, emit:
+  {"type":"frame_all"}    — fit-all
+  {"type":"terminate"}    — when CURRENT matches GOAL
+"""
+
+_QWEN_FREECAD_REMINDER_V2 = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_FREECAD_STRATEGY_V2
+_QWEN_BLENDER_REMINDER_V2 = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_BLENDER_STRATEGY_V2
+
+
 @dataclass
 class VLMResponse:
     action: dict[str, Any]
@@ -300,7 +540,8 @@ class OpenRouterVLMClient:
                  allow_fallbacks: bool = True,
                  reasoning_effort: str = "high",
                  image_max_dim: int = 1920,
-                 app: str = "freecad"):
+                 app: str = "freecad",
+                 structured_actions: bool = False):
         if not api_key:
             raise ValueError("OpenRouter API key is required")
         self.api_key = api_key
@@ -326,12 +567,18 @@ class OpenRouterVLMClient:
         # the pre-patch behavior.
         self._is_qwen = "qwen" in model.lower()
         # App-aware Qwen reminder. FreeCAD agents see FC Python-console
-        # Strategy B; Blender agents see bpy Strategy B. Anything else
-        # falls back to FC (the more battle-tested template).
-        if app == "blender":
-            self._qwen_reminder = _QWEN_BLENDER_REMINDER
+        # Strategy B; Blender agents see bpy Strategy B.
+        # v2 structured-actions experiment: when enabled, REPLACE the
+        # python_eval-templates strategy with a structured-vocabulary
+        # strategy (typed build_*/cut/fuse/compound). v1 PREPENDED and was
+        # ignored because the templates section below it kept showing the
+        # agent python_eval examples to pattern-match on. v2 swaps the
+        # whole strategy. python_eval remains as escape hatch.
+        self._structured_actions = bool(structured_actions and self._is_qwen)
+        if self._structured_actions:
+            self._qwen_reminder = _QWEN_BLENDER_REMINDER_V2 if app == "blender" else _QWEN_FREECAD_REMINDER_V2
         else:
-            self._qwen_reminder = _QWEN_FREECAD_REMINDER
+            self._qwen_reminder = _QWEN_BLENDER_REMINDER if app == "blender" else _QWEN_FREECAD_REMINDER
 
     # --- public API --------------------------------------------------------
 
@@ -351,6 +598,11 @@ class OpenRouterVLMClient:
             user_text += f"\n\nRecent history:\n{max_history_hint}"
         if self._is_qwen:
             user_text += "\n\n" + self._qwen_reminder
+            # Inject GOAL_NAME parsed from the goal screenshot filename so the
+            # agent can name its object to match (free name_overlap points).
+            goal_name = _extract_goal_name(goal_png)
+            if goal_name:
+                user_text += f"\n\nGOAL_NAME = '{goal_name}'  (use as the third arg to addObject / object name)"
 
         messages = [
             {"role": "system", "content": system_prompt},

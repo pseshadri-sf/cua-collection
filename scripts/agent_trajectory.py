@@ -68,6 +68,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--escalate-to-effort", choices=("low", "medium", "high"),
                         default="high",
                         help="Reasoning effort to switch to on escalation.")
+    parser.add_argument("--structured-actions", action="store_true",
+                        help="v1 experiment: prepend a preamble to the Qwen "
+                             "reminder that prefers typed build_*/cut/fuse/compound "
+                             "actions over raw python_eval. Default OFF.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -88,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         reasoning_effort=args.reasoning_effort,
         image_max_dim=args.image_max_dim,
         app="freecad",
+        structured_actions=args.structured_actions,
     )
     runner = AgentTrajectoryRunner(
         goal_png=Path(args.goal),

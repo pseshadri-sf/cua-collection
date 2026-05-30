@@ -16,6 +16,9 @@ VALID_TYPES = {
     "type", "key", "hotkey", "scroll", "sleep", "terminate",
     "menu_navigate", "switch_workbench", "focus_viewport",
     "python_eval", "frame_view",
+    # --- v1 structured actions (Qwen-only path; python_eval remains escape hatch) ---
+    "build_box", "build_cylinder", "build_sphere", "build_torus",
+    "cut", "fuse", "compound",
 }
 
 
@@ -341,6 +344,136 @@ class ActionExecutor:
         self._pg.press("v"); time.sleep(0.15)
         self._pg.press("f")
         return ExecutionResult(True, post_action_sleep=0.6)
+
+    # --- v1 structured actions ------------------------------------------------
+    # Each structured action translates to a deterministic single-line Python
+    # snippet and routes through _do_python_eval. The agent supplies typed
+    # parameters; we generate the exec-correct Python. Compared to the agent
+    # typing the same Python directly via python_eval, this:
+    #   - rejects calls missing required dimensions at parse time
+    #   - eliminates Python syntax errors
+    #   - eliminates name-binding errors (uses obj.Label = name uniformly)
+    #
+    # NOTE: these are TEMPORARY (v1). Keep python_eval as the escape hatch.
+
+    def _do_build_box(self, a: dict) -> ExecutionResult:
+        dims = a.get("dims") or {}
+        origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        for k in ("x", "y", "z"):
+            if not isinstance(dims.get(k), (int, float)) or dims[k] <= 0:
+                return ExecutionResult(False, f"'build_box' requires positive dims.{k} (got {dims.get(k)!r})")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_box' requires non-empty 'name'")
+        code = (
+            f"import Part,FreeCAD as App;"
+            f"_doc=App.ActiveDocument or App.newDocument();"
+            f"_b=Part.makeBox({dims['x']},{dims['y']},{dims['z']});"
+            f"_b.translate(App.Vector({origin['x']},{origin['y']},{origin['z']}));"
+            f"_o=_doc.addObject('Part::Feature',{name!r});_o.Shape=_b;_doc.recompute()"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_build_cylinder(self, a: dict) -> ExecutionResult:
+        radius = a.get("radius"); height = a.get("height")
+        axis = (a.get("axis") or "z").lower()
+        origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        if not isinstance(radius, (int, float)) or radius <= 0:
+            return ExecutionResult(False, f"'build_cylinder' requires positive 'radius' (got {radius!r})")
+        if not isinstance(height, (int, float)) or height <= 0:
+            return ExecutionResult(False, f"'build_cylinder' requires positive 'height' (got {height!r})")
+        if axis not in ("x", "y", "z"):
+            return ExecutionResult(False, f"'axis' must be one of x|y|z (got {axis!r})")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_cylinder' requires non-empty 'name'")
+        axis_vec = {"x": "App.Vector(1,0,0)", "y": "App.Vector(0,1,0)", "z": "App.Vector(0,0,1)"}[axis]
+        code = (
+            f"import Part,FreeCAD as App;"
+            f"_doc=App.ActiveDocument or App.newDocument();"
+            f"_c=Part.makeCylinder({radius},{height},"
+            f"App.Vector({origin['x']},{origin['y']},{origin['z']}),{axis_vec});"
+            f"_o=_doc.addObject('Part::Feature',{name!r});_o.Shape=_c;_doc.recompute()"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_build_sphere(self, a: dict) -> ExecutionResult:
+        radius = a.get("radius")
+        origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        if not isinstance(radius, (int, float)) or radius <= 0:
+            return ExecutionResult(False, "'build_sphere' requires positive 'radius'")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_sphere' requires non-empty 'name'")
+        code = (
+            f"import Part,FreeCAD as App;"
+            f"_doc=App.ActiveDocument or App.newDocument();"
+            f"_s=Part.makeSphere({radius});"
+            f"_s.translate(App.Vector({origin['x']},{origin['y']},{origin['z']}));"
+            f"_o=_doc.addObject('Part::Feature',{name!r});_o.Shape=_s;_doc.recompute()"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_build_torus(self, a: dict) -> ExecutionResult:
+        Rmaj = a.get("major_radius"); Rmin = a.get("minor_radius")
+        origin = a.get("origin") or {"x": 0, "y": 0, "z": 0}
+        name = a.get("name")
+        if not isinstance(Rmaj, (int, float)) or Rmaj <= 0:
+            return ExecutionResult(False, "'build_torus' requires positive 'major_radius'")
+        if not isinstance(Rmin, (int, float)) or Rmin <= 0:
+            return ExecutionResult(False, "'build_torus' requires positive 'minor_radius'")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'build_torus' requires non-empty 'name'")
+        code = (
+            f"import Part,FreeCAD as App;"
+            f"_doc=App.ActiveDocument or App.newDocument();"
+            f"_t=Part.makeTorus({Rmaj},{Rmin});"
+            f"_t.translate(App.Vector({origin['x']},{origin['y']},{origin['z']}));"
+            f"_o=_doc.addObject('Part::Feature',{name!r});_o.Shape=_t;_doc.recompute()"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_cut(self, a: dict) -> ExecutionResult:
+        from_name = a.get("from"); by_name = a.get("by"); name = a.get("name")
+        if not all(isinstance(s, str) and s.strip() for s in (from_name, by_name, name)):
+            return ExecutionResult(False, "'cut' requires string 'from', 'by', and 'name'")
+        code = (
+            f"import FreeCAD as App;_doc=App.ActiveDocument;"
+            f"_a=_doc.getObject({from_name!r}).Shape;_b=_doc.getObject({by_name!r}).Shape;"
+            f"_r=_a.cut(_b);_o=_doc.addObject('Part::Feature',{name!r});"
+            f"_o.Shape=_r;_doc.recompute()"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_fuse(self, a: dict) -> ExecutionResult:
+        shapes = a.get("shapes"); name = a.get("name")
+        if not isinstance(shapes, list) or len(shapes) < 2 or not all(isinstance(s, str) for s in shapes):
+            return ExecutionResult(False, "'fuse' requires list 'shapes' of >=2 names")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'fuse' requires non-empty 'name'")
+        names_list = "[" + ",".join(f"_doc.getObject({s!r}).Shape" for s in shapes) + "]"
+        code = (
+            f"import Part,FreeCAD as App;_doc=App.ActiveDocument;"
+            f"_shapes={names_list};_r=_shapes[0]"
+            + "".join([f".fuse(_shapes[{i+1}])" for i in range(len(shapes) - 1)]) + ";"
+            f"_o=_doc.addObject('Part::Feature',{name!r});_o.Shape=_r;_doc.recompute()"
+        )
+        return self._do_python_eval({"code": code})
+
+    def _do_compound(self, a: dict) -> ExecutionResult:
+        """Like fuse, but without boolean union — keeps the parts distinct."""
+        shapes = a.get("shapes"); name = a.get("name")
+        if not isinstance(shapes, list) or len(shapes) < 2 or not all(isinstance(s, str) for s in shapes):
+            return ExecutionResult(False, "'compound' requires list 'shapes' of >=2 names")
+        if not isinstance(name, str) or not name.strip():
+            return ExecutionResult(False, "'compound' requires non-empty 'name'")
+        names_list = "[" + ",".join(f"_doc.getObject({s!r}).Shape" for s in shapes) + "]"
+        code = (
+            f"import Part,FreeCAD as App;_doc=App.ActiveDocument;"
+            f"_r=Part.makeCompound({names_list});"
+            f"_o=_doc.addObject('Part::Feature',{name!r});_o.Shape=_r;_doc.recompute()"
+        )
+        return self._do_python_eval({"code": code})
 
     @staticmethod
     def _xy(a: dict) -> tuple[int, int]:

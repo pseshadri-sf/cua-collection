@@ -50,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="If >0, escalate reasoning effort after N steps.")
     parser.add_argument("--escalate-to-effort", choices=("low", "medium", "high"),
                         default="high")
+    parser.add_argument("--structured-actions", action="store_true",
+                        help="v1: prefer typed build_*/cut/fuse over python_eval.")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -68,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         reasoning_effort=args.reasoning_effort,
         image_max_dim=args.image_max_dim,
         app="blender",
+        structured_actions=args.structured_actions,
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),
