@@ -72,6 +72,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="v1 experiment: prepend a preamble to the Qwen "
                              "reminder that prefers typed build_*/cut/fuse/compound "
                              "actions over raw python_eval. Default OFF.")
+    parser.add_argument("--tool-calling", action="store_true",
+                        help="Wave-1: enable OpenRouter tools=[...] for the "
+                             "typed build_*/cut/fuse/compound actions. Replaces "
+                             "JSON-action-in-content with structured tool_calls.")
+    parser.add_argument("--few-shot", action="store_true",
+                        help="Wave-1: prepend few-shot exemplars distilled from "
+                             "high-scoring prior trajectories.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -93,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         image_max_dim=args.image_max_dim,
         app="freecad",
         structured_actions=args.structured_actions,
+        tool_calling=args.tool_calling,
+        few_shot=args.few_shot,
     )
     runner = AgentTrajectoryRunner(
         goal_png=Path(args.goal),

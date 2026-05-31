@@ -520,6 +520,203 @@ _QWEN_FREECAD_REMINDER_V2 = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_FREECAD_STRATEG
 _QWEN_BLENDER_REMINDER_V2 = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_BLENDER_STRATEGY_V2
 
 
+# Wave-1: few-shot exemplars distilled from top-scoring trajectories in
+# sweep120-v2. Each example shows a goal description + the python_eval the
+# agent emitted + its match_score. Goal: behavioural transfer via concrete
+# examples (~5× more reliable than abstract template text).
+_FEW_SHOT_FC = """
+FEW-SHOT EXAMPLES from past high-scoring trajectories on this pipeline:
+
+  Example 1 — "showerpad1x1m" (1000mm square shower tray, 100mm tall, with inset):
+    Score: 74  Code emitted via python_eval:
+      doc=App.newDocument();import Part;o2=Part.makeBox(1000,1000,80);i=Part.makeBox(940,940,40);i.translate(App.Vector(30,30,40));s=o2.cut(i);o=doc.addObject('Part::Feature','showerpad1x1m');o.Shape=s;doc.recompute()
+
+  Example 2 — "simple-door" (door panel, ~900×40×2100mm):
+    Score: 61  Code:
+      doc=App.newDocument();import Part;b=Part.makeBox(900,40,2100);o=doc.addObject('Part::Feature','simple-door');o.Shape=b;doc.recompute()
+
+  Example 3 — "screw_m16x100" (M16 cap screw, head + shaft):
+    Score: 51  Code:
+      doc=App.newDocument();import Part;head=Part.makeCylinder(12,10);shaft=Part.makeCylinder(8,100,App.Vector(0,0,10));s=head.fuse(shaft);o=doc.addObject('Part::Feature','screw_m16x100');o.Shape=s;doc.recompute()
+
+  Example 4 — "bearing" (concentric outer ring 30mm OD, 10mm bore, 8mm thick):
+    Score: 50  Code:
+      doc=App.newDocument();import Part;outer=Part.makeCylinder(30,8);bore=Part.makeCylinder(10,8);s=outer.cut(bore);o=doc.addObject('Part::Feature','bearing');o.Shape=s;doc.recompute()
+
+Notice the pattern: NEW document + import Part + Part.make* with realistic
+dimensions + addObject with a NAME that matches the goal stem + recompute.
+The dimensions are NEVER copied from the template — they're estimated from
+the goal image. Object name ALWAYS matches GOAL_NAME passed in this prompt.
+"""
+
+_FEW_SHOT_BL = """
+FEW-SHOT EXAMPLES from past high-scoring Blender trajectories:
+
+  Example 1 — "cube" (default 2-unit cube):
+    Score: 100  Code:
+      import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2,location=(0,0,0))
+
+  Example 2 — "monkey" (Suzanne):
+    Score: 100  Code:
+      import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_monkey_add(size=2)
+
+  Example 3 — "kitbash_robot" (5-part assembly: base + torso + head + 2 arms):
+    Score: 80  Code (4 sequential primitive_add calls in one python_eval):
+      import bpy,math;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2,location=(0,0,-0.5));bpy.ops.mesh.primitive_cube_add(size=1.6,location=(0,0,1));bpy.ops.mesh.primitive_uv_sphere_add(radius=0.55,location=(0,0,2.3));bpy.ops.mesh.primitive_cylinder_add(radius=0.2,depth=1.6,location=(1.3,0,1),rotation=(0,math.radians(90),0));bpy.ops.mesh.primitive_cylinder_add(radius=0.2,depth=1.6,location=(-1.3,0,1),rotation=(0,math.radians(90),0))
+
+Pattern: select_all + delete (clears default cube) + ONE python_eval that
+chains N primitive_*_add calls for multi-part scenes. Use bpy.ops, not raw bmesh.
+"""
+
+
+# Wave-1 tool-calling schemas (OpenRouter / OpenAI-compatible format).
+# When --tool-calling is set, vlm_client passes these in the `tools`
+# parameter of the chat-completion request. The model's response
+# arrives as a structured `tool_calls` array instead of a JSON-in-text
+# action — bypassing the prompt-only adoption failure we hit in v1/v2.
+_TOOLS_FC = [
+    {"type": "function", "function": {
+        "name": "build_box",
+        "description": "Build a rectangular box at origin in FreeCAD. Dimensions in mm.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dims":   {"type": "object", "properties": {
+                    "x": {"type": "number", "description": "width in mm"},
+                    "y": {"type": "number", "description": "depth in mm"},
+                    "z": {"type": "number", "description": "height in mm"},
+                }, "required": ["x", "y", "z"]},
+                "origin": {"type": "object", "properties": {
+                    "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+                }, "required": ["x", "y", "z"]},
+                "name":   {"type": "string", "description": "object name for later references"},
+            },
+            "required": ["dims", "name"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "build_cylinder",
+        "description": "Build a cylinder. Radius/height in mm.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "radius": {"type": "number"},
+                "height": {"type": "number"},
+                "axis":   {"type": "string", "enum": ["x","y","z"], "description": "default z"},
+                "origin": {"type": "object", "properties": {
+                    "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+                }, "required": ["x", "y", "z"]},
+                "name":   {"type": "string"},
+            },
+            "required": ["radius", "height", "name"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "build_sphere",
+        "description": "Build a sphere. Radius in mm.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "radius": {"type": "number"},
+                "origin": {"type": "object", "properties": {
+                    "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+                }, "required": ["x", "y", "z"]},
+                "name":   {"type": "string"},
+            },
+            "required": ["radius", "name"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "build_torus",
+        "description": "Build a torus. Radii in mm.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "major_radius": {"type": "number"},
+                "minor_radius": {"type": "number"},
+                "origin": {"type": "object", "properties": {
+                    "x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"},
+                }, "required": ["x", "y", "z"]},
+                "name":   {"type": "string"},
+            },
+            "required": ["major_radius", "minor_radius", "name"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "cut",
+        "description": "Boolean DIFFERENCE: subtract `by` from `from`, store as `name`.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "name of the minuend"},
+                "by":   {"type": "string", "description": "name of the subtrahend"},
+                "name": {"type": "string", "description": "name of the result"},
+            },
+            "required": ["from", "by", "name"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "fuse",
+        "description": "Boolean UNION of >= 2 named shapes into a new named shape.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "shapes": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+                "name":   {"type": "string"},
+            },
+            "required": ["shapes", "name"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "compound",
+        "description": "Group >= 2 named shapes into one feature WITHOUT boolean union (keeps parts distinct).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "shapes": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+                "name":   {"type": "string"},
+            },
+            "required": ["shapes", "name"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "frame_view",
+        "description": "Focus viewport, switch to isometric, fit-all. Use after any build_* to verify.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "python_eval",
+        "description": "ESCAPE HATCH for shapes not expressible as primitives + booleans (revolutions, lofts, sweeps). Prefer typed actions when possible.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Single-line FreeCAD Python to execute in the Python console."},
+            },
+            "required": ["code"],
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "terminate",
+        "description": "End the trajectory. Use when CURRENT_STATE matches GOAL_STATE.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+]
+
+# Blender tool set: structurally identical, with units in blender-units and
+# python_eval scoped to modifier stacks / curves / text / metaballs.
+_TOOLS_BL = [
+    {**t, "function": {**t["function"],
+        "description": t["function"]["description"].replace(" in mm.", " in blender-units.")
+            .replace("FreeCAD Python", "Blender bpy Python")
+            .replace("FreeCAD", "Blender")}}
+    for t in _TOOLS_FC
+]
+# Rename frame_view → frame_all for Blender
+for t in _TOOLS_BL:
+    if t["function"]["name"] == "frame_view":
+        t["function"]["name"] = "frame_all"
+
+
 @dataclass
 class VLMResponse:
     action: dict[str, Any]
@@ -541,7 +738,9 @@ class OpenRouterVLMClient:
                  reasoning_effort: str = "high",
                  image_max_dim: int = 1920,
                  app: str = "freecad",
-                 structured_actions: bool = False):
+                 structured_actions: bool = False,
+                 tool_calling: bool = False,
+                 few_shot: bool = False):
         if not api_key:
             raise ValueError("OpenRouter API key is required")
         self.api_key = api_key
@@ -579,6 +778,17 @@ class OpenRouterVLMClient:
             self._qwen_reminder = _QWEN_BLENDER_REMINDER_V2 if app == "blender" else _QWEN_FREECAD_REMINDER_V2
         else:
             self._qwen_reminder = _QWEN_BLENDER_REMINDER if app == "blender" else _QWEN_FREECAD_REMINDER
+        # Wave-1: tool-calling mode. When enabled, the chat-completion request
+        # carries `tools=[...]` and the model's response includes structured
+        # tool_calls — bypassing the prompt-only JSON-action adoption failure.
+        self._tool_calling = bool(tool_calling and self._is_qwen)
+        self._app = app
+        if self._tool_calling:
+            self._tools = _TOOLS_BL if app == "blender" else _TOOLS_FC
+        else:
+            self._tools = None
+        # Wave-1: few-shot exemplars appended to the per-turn user message.
+        self._few_shot = bool(few_shot and self._is_qwen)
 
     # --- public API --------------------------------------------------------
 
@@ -603,6 +813,8 @@ class OpenRouterVLMClient:
             goal_name = _extract_goal_name(goal_png)
             if goal_name:
                 user_text += f"\n\nGOAL_NAME = '{goal_name}'  (use as the third arg to addObject / object name)"
+            if self._few_shot:
+                user_text += "\n" + (_FEW_SHOT_BL if self._app == "blender" else _FEW_SHOT_FC)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -619,17 +831,18 @@ class OpenRouterVLMClient:
             "model": self.model,
             "messages": messages,
             "temperature": 0.2,
-            # Total completion budget. Reasoning + visible content must fit
-            # together; with effort:medium we still want plenty of room for
-            # the JSON action object after the model thinks.
-            # Generous completion budget so high-effort reasoning has room
-            # to think AND emit the JSON action object afterwards.
             "max_tokens": 8192,
-            # OpenRouter rejects passing both effort and max_tokens; pick one.
             "reasoning": {"effort": self.reasoning_effort},
-            # We want JSON back; many models honor this hint.
-            "response_format": {"type": "json_object"},
         }
+        # Tool-calling: pass tool schemas, force tool_choice="auto" so the
+        # model uses them by default. Don't request response_format JSON
+        # because tool_calls come via a different field anyway.
+        if self._tool_calling and self._tools:
+            payload["tools"] = self._tools
+            payload["tool_choice"] = "auto"
+        else:
+            # JSON-action-in-content mode (current default).
+            payload["response_format"] = {"type": "json_object"}
         provider_block: dict[str, Any] = {}
         if self.provider_order:
             provider_block["order"] = list(self.provider_order)
@@ -660,6 +873,28 @@ class OpenRouterVLMClient:
         content = msg.get("content") or ""
         reasoning = msg.get("reasoning")
         finish = choice.get("finish_reason")
+        tool_calls = msg.get("tool_calls") or []
+
+        # Tool-calling path: structured tool_calls take precedence over content.
+        if self._tool_calling and tool_calls:
+            tc = tool_calls[0]  # one action per turn
+            fn = tc.get("function") or {}
+            name = fn.get("name") or ""
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+            except json.JSONDecodeError:
+                args = {}
+            action = {"type": name, **args}
+            rationale = content or (reasoning or "")[:500] or f"tool_call: {name}"
+            return VLMResponse(
+                action=action,
+                rationale=str(rationale),
+                raw_content=content,
+                reasoning_trace=reasoning if isinstance(reasoning, str) else None,
+                finish_reason=finish,
+                usage=body.get("usage"),
+            )
 
         # When `content` is empty but the model still produced reasoning
         # text containing a JSON action (common on length-truncated calls),

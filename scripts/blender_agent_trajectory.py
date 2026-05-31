@@ -52,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
                         default="high")
     parser.add_argument("--structured-actions", action="store_true",
                         help="v1: prefer typed build_*/cut/fuse over python_eval.")
+    parser.add_argument("--tool-calling", action="store_true",
+                        help="Wave-1: enable OpenRouter tools=[...] for typed actions.")
+    parser.add_argument("--few-shot", action="store_true",
+                        help="Wave-1: prepend few-shot exemplars.")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -71,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         image_max_dim=args.image_max_dim,
         app="blender",
         structured_actions=args.structured_actions,
+        tool_calling=args.tool_calling,
+        few_shot=args.few_shot,
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),
