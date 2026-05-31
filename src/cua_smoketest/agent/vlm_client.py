@@ -568,6 +568,36 @@ Pattern: select_all + delete (clears default cube) + ONE python_eval that
 chains N primitive_*_add calls for multi-part scenes. Use bpy.ops, not raw bmesh.
 """
 
+# Wave-2 #2: shorter (2-example) few-shot to mitigate the Wave-1 loop-kill regression.
+# Plus: delayed injection — only attach from step 2+, so the agent's first action
+# isn't dominated by a verbatim copy of an example.
+_FEW_SHOT_FC_SHORT = """
+FEW-SHOT EXAMPLE pair (from past high-scoring trajectories):
+
+  Goal stem "showerpad1x1m" (1000mm shower tray, 100mm tall, inset 30mm deep):
+    Score: 74  python_eval code:
+      doc=App.newDocument();import Part;o2=Part.makeBox(1000,1000,80);i=Part.makeBox(940,940,40);i.translate(App.Vector(30,30,40));s=o2.cut(i);o=doc.addObject('Part::Feature','showerpad1x1m');o.Shape=s;doc.recompute()
+
+  Goal stem "screw_m16x100" (M16 cap screw, head 12mm + shaft 100mm):
+    Score: 51  python_eval code:
+      doc=App.newDocument();import Part;head=Part.makeCylinder(12,10);shaft=Part.makeCylinder(8,100,App.Vector(0,0,10));s=head.fuse(shaft);o=doc.addObject('Part::Feature','screw_m16x100');o.Shape=s;doc.recompute()
+
+ADAPT these to YOUR goal: change dimensions and the object name to match the
+goal image and GOAL_NAME. Do NOT copy verbatim — copying scores zero.
+"""
+
+_FEW_SHOT_BL_SHORT = """
+FEW-SHOT EXAMPLE pair:
+
+  Goal stem "cube" (2-unit cube): Score 100
+    import bpy;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2,location=(0,0,0))
+
+  Goal stem "kitbash_robot" (5-part assembly): Score 80
+    import bpy,math;bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete();bpy.ops.mesh.primitive_cube_add(size=2,location=(0,0,-0.5));bpy.ops.mesh.primitive_cube_add(size=1.6,location=(0,0,1));bpy.ops.mesh.primitive_uv_sphere_add(radius=0.55,location=(0,0,2.3));bpy.ops.mesh.primitive_cylinder_add(radius=0.2,depth=1.6,location=(1.3,0,1),rotation=(0,math.radians(90),0));bpy.ops.mesh.primitive_cylinder_add(radius=0.2,depth=1.6,location=(-1.3,0,1),rotation=(0,math.radians(90),0))
+
+ADAPT — change dims, names, parts to match YOUR goal.
+"""
+
 
 # Wave-1 tool-calling schemas (OpenRouter / OpenAI-compatible format).
 # When --tool-calling is set, vlm_client passes these in the `tools`
@@ -716,6 +746,12 @@ for t in _TOOLS_BL:
     if t["function"]["name"] == "frame_view":
         t["function"]["name"] = "frame_all"
 
+# Wave-2 #1: tool sets WITHOUT python_eval — for tool_choice="required" runs
+# that force the model to pick a typed action (no escape hatch). Used when
+# --tool-calling-required is set.
+_TOOLS_FC_REQUIRED = [t for t in _TOOLS_FC if t["function"]["name"] != "python_eval"]
+_TOOLS_BL_REQUIRED = [t for t in _TOOLS_BL if t["function"]["name"] != "python_eval"]
+
 
 @dataclass
 class VLMResponse:
@@ -740,7 +776,9 @@ class OpenRouterVLMClient:
                  app: str = "freecad",
                  structured_actions: bool = False,
                  tool_calling: bool = False,
-                 few_shot: bool = False):
+                 tool_calling_required: bool = False,
+                 few_shot: bool = False,
+                 few_shot_delayed: bool = False):
         if not api_key:
             raise ValueError("OpenRouter API key is required")
         self.api_key = api_key
@@ -781,14 +819,23 @@ class OpenRouterVLMClient:
         # Wave-1: tool-calling mode. When enabled, the chat-completion request
         # carries `tools=[...]` and the model's response includes structured
         # tool_calls — bypassing the prompt-only JSON-action adoption failure.
+        # Wave-2 #1: tool_calling_required = tool_choice="required" + python_eval
+        # excluded from the tools list, forcing the model to pick a typed action.
         self._tool_calling = bool(tool_calling and self._is_qwen)
+        self._tool_calling_required = bool(tool_calling_required and self._is_qwen)
         self._app = app
-        if self._tool_calling:
+        if self._tool_calling_required:
+            self._tools = _TOOLS_BL_REQUIRED if app == "blender" else _TOOLS_FC_REQUIRED
+        elif self._tool_calling:
             self._tools = _TOOLS_BL if app == "blender" else _TOOLS_FC
         else:
             self._tools = None
         # Wave-1: few-shot exemplars appended to the per-turn user message.
+        # Wave-2 #2: few_shot_delayed = only inject from step 2+ AND use a
+        # shorter 2-example variant (instead of 4). Mitigates the loop-kill
+        # regression seen in Wave-1 fs variant.
         self._few_shot = bool(few_shot and self._is_qwen)
+        self._few_shot_delayed = bool(few_shot_delayed and self._is_qwen)
 
     # --- public API --------------------------------------------------------
 
@@ -815,6 +862,10 @@ class OpenRouterVLMClient:
                 user_text += f"\n\nGOAL_NAME = '{goal_name}'  (use as the third arg to addObject / object name)"
             if self._few_shot:
                 user_text += "\n" + (_FEW_SHOT_BL if self._app == "blender" else _FEW_SHOT_FC)
+            elif self._few_shot_delayed and step_idx >= 2:
+                # Wave-2 #2: shorter examples, only from step 2+ to avoid
+                # anchoring the first action on a verbatim example.
+                user_text += "\n" + (_FEW_SHOT_BL_SHORT if self._app == "blender" else _FEW_SHOT_FC_SHORT)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -837,9 +888,9 @@ class OpenRouterVLMClient:
         # Tool-calling: pass tool schemas, force tool_choice="auto" so the
         # model uses them by default. Don't request response_format JSON
         # because tool_calls come via a different field anyway.
-        if self._tool_calling and self._tools:
+        if (self._tool_calling or self._tool_calling_required) and self._tools:
             payload["tools"] = self._tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = "required" if self._tool_calling_required else "auto"
         else:
             # JSON-action-in-content mode (current default).
             payload["response_format"] = {"type": "json_object"}
@@ -876,7 +927,7 @@ class OpenRouterVLMClient:
         tool_calls = msg.get("tool_calls") or []
 
         # Tool-calling path: structured tool_calls take precedence over content.
-        if self._tool_calling and tool_calls:
+        if (self._tool_calling or self._tool_calling_required) and tool_calls:
             tc = tool_calls[0]  # one action per turn
             fn = tc.get("function") or {}
             name = fn.get("name") or ""

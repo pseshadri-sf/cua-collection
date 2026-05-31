@@ -56,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Wave-1: enable OpenRouter tools=[...] for typed actions.")
     parser.add_argument("--few-shot", action="store_true",
                         help="Wave-1: prepend few-shot exemplars.")
+    parser.add_argument("--tool-calling-required", action="store_true",
+                        help="Wave-2: force typed-tool emission.")
+    parser.add_argument("--few-shot-delayed", action="store_true",
+                        help="Wave-2: 2-example few-shot from step 2+.")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -76,7 +80,9 @@ def main(argv: list[str] | None = None) -> int:
         app="blender",
         structured_actions=args.structured_actions,
         tool_calling=args.tool_calling,
+        tool_calling_required=args.tool_calling_required,
         few_shot=args.few_shot,
+        few_shot_delayed=args.few_shot_delayed,
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),

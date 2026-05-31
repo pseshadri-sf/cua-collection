@@ -79,6 +79,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--few-shot", action="store_true",
                         help="Wave-1: prepend few-shot exemplars distilled from "
                              "high-scoring prior trajectories.")
+    parser.add_argument("--tool-calling-required", action="store_true",
+                        help="Wave-2: tool_choice='required' + python_eval "
+                             "excluded from tools — force typed action emission.")
+    parser.add_argument("--few-shot-delayed", action="store_true",
+                        help="Wave-2: 2-example few-shot injected only from "
+                             "step 2+ to avoid first-action anchoring.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -101,7 +107,9 @@ def main(argv: list[str] | None = None) -> int:
         app="freecad",
         structured_actions=args.structured_actions,
         tool_calling=args.tool_calling,
+        tool_calling_required=args.tool_calling_required,
         few_shot=args.few_shot,
+        few_shot_delayed=args.few_shot_delayed,
     )
     runner = AgentTrajectoryRunner(
         goal_png=Path(args.goal),
