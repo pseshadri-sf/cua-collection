@@ -510,6 +510,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--worker-command", type=str, default=None,
                    help="Override the default agent CLI; run this command "
                         "verbatim per job (with the slot env).")
+    p.add_argument("--best-of", type=int, default=1,
+                   help="Run N independent trials per job and keep the "
+                        "max-score trial as the winner. Default 1 (no extra "
+                        "sampling). N>1 multiplies cost by ~N but lifts mean "
+                        "score by exploiting per-run variance. Trials get a "
+                        "_bo<i> suffix in their job_id; a best_of_summary.json "
+                        "is written with winners.")
     return p.parse_args(argv)
 
 
@@ -557,6 +564,22 @@ def main(argv: list[str] | None = None) -> int:
         (run_dir / "jobs.jsonl").write_text(
             "\n".join(json.dumps(j) for j in jobs) + "\n"
         )
+
+    # Best-of-N: expand each job into N trials with _bo<i> suffix.
+    # Each trial is otherwise identical; runs as a normal job. After the
+    # sweep, write_best_of_summary picks the max-score trial per base job.
+    if args.best_of > 1:
+        expanded = []
+        for j in jobs:
+            base_id = j["job_id"]
+            for i in range(args.best_of):
+                trial = dict(j)
+                trial["job_id"] = f"{base_id}_bo{i}"
+                trial["_bo_base"] = base_id
+                trial["_bo_index"] = i
+                expanded.append(trial)
+        print(f"[best-of-{args.best_of}] expanded {len(jobs)} base jobs → {len(expanded)} trials")
+        jobs = expanded
 
     # Tag each job with retry counter
     for j in jobs:
@@ -711,11 +734,79 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  summary.json:    {json_path}")
     print(f"  summary.csv:     {csv_path}")
     print(f"  per-worker:      {run_dir}/worker_NNN/")
+
+    # Best-of-N: pick the max-score trial per base job and write a separate
+    # summary. The eval runs in-process via the existing geometric evaluator.
+    if args.best_of > 1:
+        bo_path = write_best_of_summary(run_dir, results, jobs, args.best_of)
+        print(f"  best_of_summary: {bo_path}")
+
     for r in results[:3]:
         if r.trajectory_json_path:
             print(f"  sample traj:     {r.trajectory_json_path}")
             break
     return 0 if succ == len(results) and results else 1
+
+
+def write_best_of_summary(run_dir: Path, results: list, jobs: list, n: int) -> Path:
+    """For each base job, eval all N trials and keep the max-score one.
+
+    Returns the path to best_of_summary.json. Uses the existing
+    cua_smoketest.agent.evaluator. Failures in eval are reported but do not
+    abort the sweep.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from cua_smoketest.agent.evaluator import (  # noqa: E402
+        evaluate_freecad_run, evaluate_blender_run,
+        resolve_freecad_goal_asset, resolve_blender_goal_asset,
+    )
+    # Map base_id → list of (trial_idx, result, app, goal_path)
+    jobs_by_id = {j["job_id"]: j for j in jobs}
+    trials_by_base: dict[str, list] = {}
+    for r in results:
+        j = jobs_by_id.get(r.job_id, {})
+        base = j.get("_bo_base") or r.job_id  # fall back to self if not expanded
+        idx = j.get("_bo_index", 0)
+        trials_by_base.setdefault(base, []).append((idx, r, j))
+
+    out_rows = []
+    for base, trials in sorted(trials_by_base.items()):
+        scored = []
+        for idx, r, j in trials:
+            score = None
+            traj = Path(r.trajectory_json_path) if r.trajectory_json_path else None
+            if traj and traj.exists():
+                app = j.get("app", "freecad")
+                resolver = resolve_freecad_goal_asset if app == "freecad" else resolve_blender_goal_asset
+                runner = evaluate_freecad_run if app == "freecad" else evaluate_blender_run
+                asset = resolver(Path(j["goal_path"]))
+                if asset:
+                    try:
+                        edir = traj.parent / "eval"
+                        ev = runner(traj, asset, edir)
+                        (edir / "eval.json").write_text(json.dumps(ev, indent=2))
+                        score = ev["score"]["match_score"]
+                    except Exception as exc:
+                        pass
+            scored.append({"trial": idx, "job_id": r.job_id, "score": score,
+                           "trajectory": str(traj) if traj else None,
+                           "status": r.status, "terminated_by": r.terminated_by,
+                           "duration_sec": r.duration_sec})
+        # Pick winner: highest non-None score; tie-break on lowest trial idx.
+        valid = [s for s in scored if s["score"] is not None]
+        winner = max(valid, key=lambda s: (s["score"], -s["trial"])) if valid else None
+        out_rows.append({"base_job_id": base, "n_trials": len(trials),
+                         "winner": winner, "trials": scored})
+
+    bo_path = run_dir / "best_of_summary.json"
+    bo_path.write_text(json.dumps({
+        "best_of_n": n,
+        "base_jobs": len(out_rows),
+        "winners_mean_score": (sum(r["winner"]["score"] for r in out_rows if r["winner"])
+                               / max(1, sum(1 for r in out_rows if r["winner"]))),
+        "results": out_rows,
+    }, indent=2))
+    return bo_path
 
 
 def as_completed_compat(in_flight: dict, shutdown_event: threading.Event):
