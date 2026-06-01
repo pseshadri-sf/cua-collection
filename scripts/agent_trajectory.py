@@ -94,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Wave-3: require PART_COUNT: N in rationale + multi-part decomposition.")
     parser.add_argument("--no-box-bias", action="store_true",
                         help="Wave-3: shape-taxonomy rule to counter build_box default.")
+    parser.add_argument("--grounded", action="store_true",
+                        help="Wave-4: inject pre-computed bbox + object_count + "
+                             "primitive_class metadata from <goal>.meta.json into the "
+                             "per-turn user message. Sidecar JSONs are produced by "
+                             "scripts/extract_goal_metadata.py before the run.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -123,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         force_bool_on_voids=args.force_bool_on_voids,
         count_parts=args.count_parts,
         no_box_bias=args.no_box_bias,
+        grounded=args.grounded,
     )
     runner = AgentTrajectoryRunner(
         goal_png=Path(args.goal),

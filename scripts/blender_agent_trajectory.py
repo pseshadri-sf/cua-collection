@@ -64,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force-bool-on-voids", action="store_true")
     parser.add_argument("--count-parts", action="store_true")
     parser.add_argument("--no-box-bias", action="store_true")
+    parser.add_argument("--grounded", action="store_true",
+                        help="Wave-4: inject pre-computed GOAL_METADATA from "
+                             "<goal>.meta.json sidecar.")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -91,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         force_bool_on_voids=args.force_bool_on_voids,
         count_parts=args.count_parts,
         no_box_bias=args.no_box_bias,
+        grounded=args.grounded,
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),

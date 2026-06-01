@@ -131,30 +131,61 @@ class GeometryStats:
 class MatchScore:
     obj_present: bool
     name_overlap: float       # 0..1: jaccard of object name sets
-    vol_ratio: float           # 0..1: min/max of volumes
-    bbox_score: float          # 0..1: mean per-axis ratio
-    face_ratio: float          # 0..1: min/max of face counts
-    vert_ratio: float          # 0..1: min/max of vertex counts
+    vol_ratio: float           # 0..1: min/max of volumes (SCALE)
+    bbox_score: float          # 0..1: mean per-axis ratio (SCALE)
+    shape_proportions: float   # 0..1: per-axis ratio on NORMALIZED bboxes (SHAPE — scale-independent)
+    face_ratio: float          # 0..1: min/max of face counts (TOPOLOGY)
+    vert_ratio: float          # 0..1: min/max of vertex counts (TOPOLOGY)
     match_score: float         # 0..100 weighted composite
 
 
 # --- comparison ------------------------------------------------------------
+#
+# Reward design (v2): shape > scale.
+# Per user requirement: "concerned first with the ability to recreate the
+# shape of the asset and then after that the correct scale."
+#
+#                                  v1 (prior)   v2 (current)   bucket
+#   obj_present                       15            15         building
+#   name_overlap                      10            10         naming
+#   vol_ratio (scale)                 25            10         SCALE   ↓ 15
+#   bbox_score (absolute size)        25             5         SCALE   ↓ 20
+#   shape_proportions (NEW)            -            25         SHAPE   +25
+#   face_ratio (topology)             15            20         SHAPE   ↑ 5
+#   vert_ratio (topology)             10            15         SHAPE   ↑ 5
+#                                    ---           ---
+#                                    100           100
+#
+# Shape-related total: 60 pts (shape_proportions + face + vert)
+# Scale-related total: 15 pts (vol_ratio + bbox_score)
+# Building/naming:     25 pts (obj_present + name_overlap)
+#
+# shape_proportions is the new scale-independent component: it normalizes
+# each bbox to its longest axis (so a 1x1x4 rod matches another 1x1x4 rod
+# whether the absolute scale is mm or km), then compares per-axis ratios.
+# This captures "is the shape a slab / cube / rod / disk?" independent of
+# whether the agent's dimensions are 10× too small.
 
 def compare(goal: GeometryStats, agent: GeometryStats,
             weights: dict | None = None) -> MatchScore:
     weights = weights or {
-        "obj_present": 15,   # 0 or full
-        "name_overlap": 10,
-        "vol_ratio": 25,
-        "bbox_score": 25,
-        "face_ratio": 15,
-        "vert_ratio": 10,
+        "obj_present":       15,
+        "name_overlap":      10,
+        "vol_ratio":         10,   # ↓ from 25 (scale demoted)
+        "bbox_score":         5,   # ↓ from 25 (scale demoted; mostly absorbed by shape_proportions)
+        "shape_proportions": 25,   # NEW: normalized bbox per-axis ratio
+        "face_ratio":        20,   # ↑ from 15 (topology promoted)
+        "vert_ratio":        15,   # ↑ from 10 (topology promoted)
     }
 
     def ratio(a: float, b: float) -> float:
         if a <= 0 or b <= 0:
             return 0.0
         return min(a, b) / max(a, b)
+
+    def normalize_bbox(bb: tuple[float, float, float]) -> tuple[float, float, float]:
+        m = max(bb) if max(bb) > 0 else 1.0
+        return (bb[0]/m, bb[1]/m, bb[2]/m)
 
     obj_present = agent.found and agent.object_count >= 1
     name_overlap = (
@@ -164,6 +195,11 @@ def compare(goal: GeometryStats, agent: GeometryStats,
     )
     vol_ratio = ratio(goal.volume, agent.volume)
     bbox_score = sum(ratio(g, a) for g, a in zip(goal.bbox, agent.bbox)) / 3
+    # NEW: normalize each bbox to its longest axis, then compute per-axis ratio.
+    # Captures shape character (slab vs cube vs rod) independent of absolute scale.
+    g_norm = normalize_bbox(goal.bbox)
+    a_norm = normalize_bbox(agent.bbox)
+    shape_proportions = sum(ratio(g, a) for g, a in zip(g_norm, a_norm)) / 3
     face_ratio = ratio(goal.face_count, agent.face_count)
     vert_ratio = ratio(goal.vertex_count, agent.vertex_count)
 
@@ -172,6 +208,7 @@ def compare(goal: GeometryStats, agent: GeometryStats,
         + weights["name_overlap"] * name_overlap
         + weights["vol_ratio"] * vol_ratio
         + weights["bbox_score"] * bbox_score
+        + weights["shape_proportions"] * shape_proportions
         + weights["face_ratio"] * face_ratio
         + weights["vert_ratio"] * vert_ratio
     )
@@ -180,6 +217,7 @@ def compare(goal: GeometryStats, agent: GeometryStats,
         name_overlap=round(name_overlap, 3),
         vol_ratio=round(vol_ratio, 3),
         bbox_score=round(bbox_score, 3),
+        shape_proportions=round(shape_proportions, 3),
         face_ratio=round(face_ratio, 3),
         vert_ratio=round(vert_ratio, 3),
         match_score=round(score, 1),

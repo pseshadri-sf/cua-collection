@@ -612,6 +612,34 @@ COUNT MULTIPLY: legs, arms, racks, slats, posts — each visible identical
 copy is a separate part.
 """
 
+_W4_GROUNDED_HEADER = """
+GOAL_METADATA (pre-computed from the goal asset — TRUST THESE NUMBERS over
+your visual estimate; they were extracted by the CAD kernel from the actual
+mesh):
+  dominant_primitive_class: {klass}
+  object_count:             {n_obj}        ← build this many distinct parts (use compound/fuse if N>1)
+  bbox_{unit}:                [{w}, {d}, {h}]   ← USE THESE NUMBERS as the build_* dimensions
+  bbox_normalized:          [{nx}, {ny}, {nz}]  ← shape-only proportions (each / longest axis)
+  face_count:               {n_face}
+  vertex_count:             {n_vert}
+  shape_descriptor:         {desc}
+
+RULES:
+  1. The bbox numbers above are the TARGET dimensions. Your build_* call must
+     use these to within ±5%. Do not invent dimensions from the screenshot.
+  2. The `dominant_primitive_class` tells you which build_* to start with:
+       box       → build_box(dims=[w,d,h])
+       cylinder  → build_cylinder; the largest axis is the height, the other
+                   two should be roughly equal and = 2*radius
+       sphere    → build_sphere(radius=w/2)
+       torus     → build_torus
+       compound  → build N primitives (N = object_count above) + compound them
+       revolution → python_eval escape hatch (Part.makeRevolution / curves)
+  3. If object_count > 1, you MUST emit that many build_* actions followed
+     by a compound or fuse — a single primitive cannot earn shape_proportions
+     credit for a multi-part asset.
+"""
+
 _W3_NO_BOX_BIAS = """
 SHAPE TAXONOMY RULE (no default to box — current pipeline overemits boxes
 in 58% of cases): identify the goal's primary geometric character by its
@@ -843,7 +871,8 @@ class OpenRouterVLMClient:
                  dim_estimate: bool = False,
                  force_bool_on_voids: bool = False,
                  count_parts: bool = False,
-                 no_box_bias: bool = False):
+                 no_box_bias: bool = False,
+                 grounded: bool = False):
         if not api_key:
             raise ValueError("OpenRouter API key is required")
         self.api_key = api_key
@@ -906,6 +935,12 @@ class OpenRouterVLMClient:
         self._force_bool_on_voids = bool(force_bool_on_voids and self._is_qwen)
         self._count_parts = bool(count_parts and self._is_qwen)
         self._no_box_bias = bool(no_box_bias and self._is_qwen)
+        # Wave-4: grounded metadata injection. When --grounded is on, the
+        # per-turn user message gets a GOAL_METADATA block read from a sidecar
+        # JSON pre-computed by scripts/extract_goal_metadata.py. Sidecar lives
+        # next to the goal PNG at `<goal_stem>.meta.json`. Qwen-only.
+        self._grounded = bool(grounded and self._is_qwen)
+        self._metadata_cache: dict[str, dict[str, Any] | None] = {}
 
     # --- public API --------------------------------------------------------
 
@@ -943,6 +978,10 @@ class OpenRouterVLMClient:
                 user_text += "\n" + _W3_COUNT_PARTS
             if self._no_box_bias:
                 user_text += "\n" + _W3_NO_BOX_BIAS
+            if self._grounded:
+                grounded_block = self._render_grounded_metadata(goal_png)
+                if grounded_block:
+                    user_text += "\n" + grounded_block
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -1096,6 +1135,47 @@ class OpenRouterVLMClient:
     def _backoff(attempt: int) -> None:
         delay = min(2 ** attempt, 30)
         time.sleep(delay)
+
+    def _render_grounded_metadata(self, goal_png: Path) -> str | None:
+        """Load sidecar metadata JSON at `<goal_stem>.meta.json` and render
+        the GOAL_METADATA block. Returns None when the sidecar is absent or
+        malformed — callers degrade silently rather than fail the trajectory.
+        """
+        key = str(goal_png)
+        if key in self._metadata_cache:
+            meta = self._metadata_cache[key]
+        else:
+            sidecar = goal_png.with_suffix("").with_suffix(".meta.json")
+            if not sidecar.exists():
+                sidecar = goal_png.parent / (goal_png.stem + ".meta.json")
+            meta = None
+            if sidecar.exists():
+                try:
+                    meta = json.loads(sidecar.read_text())
+                except (OSError, json.JSONDecodeError):
+                    meta = None
+            self._metadata_cache[key] = meta
+        if not meta or meta.get("error"):
+            return None
+        bbox = meta.get("bbox_mm") or [0, 0, 0]
+        bn   = meta.get("bbox_normalized") or [0, 0, 0]
+        unit = "mm" if meta.get("app") == "freecad" else "units"
+        try:
+            return _W4_GROUNDED_HEADER.format(
+                klass  = meta.get("dominant_primitive_class", "unknown"),
+                n_obj  = meta.get("object_count", 1),
+                unit   = unit,
+                w=bbox[0], d=bbox[1], h=bbox[2],
+                nx=bn[0], ny=bn[1], nz=bn[2],
+                n_face = meta.get("face_count", "?"),
+                n_vert = meta.get("vertex_count", "?"),
+                desc   = meta.get("shape_descriptor", ""),
+            )
+        except (IndexError, KeyError, ValueError) as exc:
+            print(f"[grounded] WARN failed to render metadata for "
+                  f"{goal_png.name}: {type(exc).__name__}: {exc}",
+                  flush=True)
+            return None
 
     def _image_block(self, png_path: Path) -> dict:
         # Downscale large screenshots to cut vision-token count (a 1920x1080
