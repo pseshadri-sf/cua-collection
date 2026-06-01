@@ -663,6 +663,26 @@ USE THIS TO CHOOSE THE RIGHT CONSTRUCTION:
                                         → python_eval escape hatch
                                           (Part.makeRevolution / loft / sweep)
   • presence of 'Toroid' alongside 'Cylinder' → fillets/rounds on a cylindrical edge
+
+WORKED EXAMPLE — hex prism with axial bore (when surface_counts ≈ {{Plane: 8-10, Cylinder: 1-2}}):
+  Use Part.makePolygon + Part.Face + Part.Extrude — do NOT use Part.makeBox.
+  The cylinder samples give you the bore radius and axis direction. Pull the
+  hex flat-to-flat from the bbox (W=D for a regular hex). Example for a M3
+  hex standoff (W=D=5.5 mm, H=21 mm, bore radius=1.5 mm):
+
+    doc=App.newDocument(); import Part, math;
+    r = 5.5/2 / math.cos(math.pi/6);                        # hex circumradius
+    pts = [Part.Vertex(r*math.cos(a), r*math.sin(a), 0).Point
+           for a in [math.pi/6 + i*math.pi/3 for i in range(6)]];
+    pts.append(pts[0]);
+    wire = Part.makePolygon(pts);
+    face = Part.Face(wire);
+    hex_solid = face.extrude(App.Vector(0,0,21));
+    bore = Part.makeCylinder(1.5, 21);
+    s = hex_solid.cut(bore);
+    o = doc.addObject('Part::Feature','hex_standoff'); o.Shape = s; doc.recompute()
+
+  Adapt N=6 → N=8 for octagonal, change `r` and extrude length per goal bbox.
 """
 
 # Wave-5 B1+B2+B3: BL per-object info block. Replaces the bare bbox+origin
@@ -714,6 +734,20 @@ Example (3 parts of a hinge):
   build_cylinder(radius=8.7, height=84.5, axis="y",
                  origin=[-8, -19, 0],     name="part_02")
   compound(shapes=["part_00", "part_01", "part_02"], name="hinge")
+
+PYTHON SYNTAX RULE (CRITICAL — when emitting raw python_eval for FreeCAD):
+For fusing N parts, use a normal for loop, NOT a list comprehension with
+assignment. The following is INVALID Python and will not replay:
+  ✗ s=shapes[0];[s=s.fuse(shapes[i]) for i in range(1,N)]
+  ✗ [s=s.fuse(p) for p in shapes[1:]]
+Use one of these instead:
+  ✓ s=shapes[0]
+    for p in shapes[1:]: s=s.fuse(p)
+  ✓ from functools import reduce; s=reduce(lambda a,b: a.fuse(b), shapes)
+Single-line python_eval works fine — just join the for-loop into one line
+with a leading newline before `for`, or skip fuse entirely and use compound
+which preserves separate solids:
+  ✓ doc=App.newDocument();import Part;<build all parts>;c=Part.makeCompound([part_00,part_01,...]);o=doc.addObject('Part::Feature','asm');o.Shape=c;doc.recompute()
 """
 
 _W3_NO_BOX_BIAS = """

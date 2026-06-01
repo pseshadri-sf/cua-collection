@@ -17,6 +17,33 @@ def _args() -> list[str]:
     return sys.argv[1:]
 
 
+_CONVERTIBLE = {"FONT", "CURVE", "META", "SURFACE"}
+
+
+def _convert_to_mesh() -> None:
+    """Convert non-MESH renderable objects to MESH in-place.
+
+    Required so the evaluator can measure text bodies (FONT), extruded
+    curves (CURVE), metaballs (META), and NURBS surfaces (SURFACE).
+    Idempotent on already-MESH objects.
+    """
+    bpy.ops.object.select_all(action="DESELECT")
+    targets = [o for o in bpy.context.scene.objects if o.type in _CONVERTIBLE]
+    if not targets:
+        return
+    for o in targets:
+        try:
+            o.select_set(True)
+        except RuntimeError:
+            pass
+    bpy.context.view_layer.objects.active = targets[0]
+    try:
+        bpy.ops.object.convert(target="MESH")
+    except RuntimeError as exc:
+        # Some types (notably empty FONT bodies) refuse to convert; skip silently
+        print(f"[measure] convert-to-MESH warning: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     argv = _args()
     if len(argv) < 2:
@@ -39,6 +66,10 @@ def main() -> int:
 
 
 def _measure_scene() -> dict:
+    # Wave-5.1 fix: convert any FONT/CURVE/META/SURFACE objects to MESH first
+    # so geometric metrics include text bodies, extruded curves, metaballs, etc.
+    # Without this, asset/agent both score volume=0 on text scenes.
+    _convert_to_mesh()
     mesh_objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     if not mesh_objs:
         return {

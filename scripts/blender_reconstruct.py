@@ -38,6 +38,10 @@ def run() -> int:
         except Exception as exc:  # noqa: BLE001
             failures.append(f"chunk {i}: {type(exc).__name__}: {exc}")
 
+    # Wave-5.1: convert FONT/CURVE/META/SURFACE to MESH so the evaluator can
+    # measure text bodies, extruded curves, metaballs, NURBS surfaces.
+    _convert_to_mesh()
+
     stats = _measure_scene()
     stats["chunks"] = len(chunks)
     stats["replay_failures"] = failures[:20]
@@ -49,6 +53,25 @@ def run() -> int:
 
     open(stats_path, "w").write(json.dumps(stats, indent=2))
     return 0
+
+
+_CONVERTIBLE = {"FONT", "CURVE", "META", "SURFACE"}
+
+
+def _convert_to_mesh() -> None:
+    """Convert non-MESH renderable objects to MESH (Wave-5.1 evaluator fix)."""
+    bpy.ops.object.select_all(action="DESELECT")
+    targets = [o for o in bpy.context.scene.objects if o.type in _CONVERTIBLE]
+    if not targets:
+        return
+    for o in targets:
+        try: o.select_set(True)
+        except RuntimeError: pass
+    bpy.context.view_layer.objects.active = targets[0]
+    try:
+        bpy.ops.object.convert(target="MESH")
+    except RuntimeError as exc:
+        print(f"[reconstruct] convert-to-MESH warning: {exc}", file=sys.stderr)
 
 
 def _measure_scene() -> dict:
