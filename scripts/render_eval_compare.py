@@ -29,6 +29,8 @@ from PIL import Image, ImageDraw, ImageFont
 PANEL_W, PANEL_H = 640, 480
 BANNER_H = 120
 PAD = 12
+PART_W, PART_H = 240, 180
+PARTS_BANNER_H = 28
 BG = (28, 28, 32)
 FG = (235, 235, 240)
 FG_DIM = (170, 170, 180)
@@ -66,6 +68,36 @@ def _last_frame(job_dir: Path) -> Path | None:
     return frames[-1] if frames else None
 
 
+def _parts_for_job(job_dir: Path) -> list[dict] | None:
+    """Return the parts list from the goal sidecar (or None)."""
+    # Find the goal_path from eval.json → derive sidecar path
+    ej = job_dir / "eval" / "eval.json"
+    if not ej.exists():
+        return None
+    try:
+        e = json.loads(ej.read_text())
+    except json.JSONDecodeError:
+        return None
+    # The goal_asset is the source file path; we need to find the sidecar that
+    # corresponds to the goal_PNG used in the trajectory. We have the goal.png
+    # copy in job_dir, but we need to find the original to locate the sidecar.
+    # Easiest: scan E_*_loaded_<stem>.meta.json files that match the goal_asset.
+    asset_stem = Path(e.get("goal_asset", "")).stem
+    if not asset_stem:
+        return None
+    import glob
+    # Try BL first
+    for root in ("/home/ubuntu/cua_blender_smoketest/screenshots",
+                 "/home/ubuntu/cua_gui_smoketest/screenshots"):
+        for sc in glob.glob(f"{root}/E_*loaded_*.meta.json"):
+            try:
+                d = json.loads(Path(sc).read_text())
+            except Exception: continue
+            if Path(d.get("asset","")).stem == asset_stem:
+                return d.get("parts")
+    return None
+
+
 def _agent_view(job_dir: Path) -> tuple[Path, str] | None:
     """Prefer the clean headless re-render; fall back to last trajectory frame.
     Returns (path, label) where label is what to write above the panel.
@@ -95,8 +127,21 @@ def build_one(job_dir: Path) -> Image.Image | None:
         return None
     agent_path, agent_label = av
 
+    # Optional sub-object strip: load parts from sidecar + their thumbnails
+    parts = _parts_for_job(job_dir)
+    parts_with_thumbs: list[tuple[dict, Path | None]] = []
+    if parts:
+        asset_stem = Path(json.loads((job_dir / "eval" / "eval.json").read_text())
+                          .get("goal_asset","")).stem
+        cache = Path("/tmp/decomposed_parts_cache") / asset_stem
+        for p in parts[:8]:    # cap at 8 sub-parts to keep the image manageable
+            idx = p.get("index", 0)
+            thumb = cache / f"part_{idx:02d}.png"
+            parts_with_thumbs.append((p, thumb if thumb.exists() else None))
+
     W = PANEL_W * 2 + PAD * 3
-    H = PANEL_H + BANNER_H + PAD * 2
+    parts_h = (PART_H + PARTS_BANNER_H + PAD) if parts_with_thumbs else 0
+    H = PANEL_H + BANNER_H + PAD * 2 + parts_h
     canvas = Image.new("RGB", (W, H), BG)
 
     goal_im  = _fit(Image.open(goal),       PANEL_W, PANEL_H)
@@ -151,6 +196,36 @@ def build_one(job_dir: Path) -> Image.Image | None:
             f"agent: bbox={_fmt_bbox(as_)} faces={as_.get('face_count','?')} "
             f"vol={as_.get('volume',0):.0f}")
     draw.text((PAD, stats_y), line, fill=FG_DIM, font=small)
+
+    # ── Per-part sub-object strip ──────────────────────────────────────────
+    if parts_with_thumbs:
+        strip_y = PAD + PANEL_H + BANNER_H + PAD
+        # Banner label
+        n_parts_total = len(parts) if parts else 0
+        label = f"GOAL SUB-PARTS (showing {len(parts_with_thumbs)} of {n_parts_total} — ordered by volume desc)"
+        draw.text((PAD, strip_y), label, fill=FG, font=sub)
+        strip_y += PARTS_BANNER_H
+        # Lay out N thumbnails left-to-right; if too many, scale down width
+        avail_w = W - PAD * 2
+        slot_w = min(PART_W, avail_w // max(1, len(parts_with_thumbs)))
+        for i, (p, thumb) in enumerate(parts_with_thumbs):
+            x = PAD + i * slot_w
+            cell = Image.new("RGB", (slot_w, PART_H), (12, 12, 14))
+            if thumb is not None and thumb.exists():
+                try:
+                    im = Image.open(thumb)
+                    im.thumbnail((slot_w - 4, PART_H - 30), Image.LANCZOS)
+                    cell.paste(im, ((slot_w - im.width) // 2, 2))
+                except Exception: pass
+            # Label
+            cdraw = ImageDraw.Draw(cell)
+            bbox = p.get("bbox") or [0, 0, 0]
+            name = (p.get("name") or f"part_{p.get('index',0):02d}")[:18]
+            cdraw.text((4, PART_H - 28), name, fill=FG, font=small)
+            cdraw.text((4, PART_H - 14),
+                       f"[{bbox[0]:.1f}, {bbox[1]:.1f}, {bbox[2]:.1f}]",
+                       fill=FG_DIM, font=small)
+            canvas.paste(cell, (x, strip_y))
 
     return canvas
 
