@@ -64,9 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force-bool-on-voids", action="store_true")
     parser.add_argument("--count-parts", action="store_true")
     parser.add_argument("--no-box-bias", action="store_true")
-    parser.add_argument("--grounded", action="store_true",
-                        help="Wave-4: inject pre-computed GOAL_METADATA from "
-                             "<goal>.meta.json sidecar.")
+    parser.add_argument("--grounded", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Wave-4 (default ON): inject pre-computed GOAL_METADATA "
+                             "from <goal>.meta.json sidecar. Pass --no-grounded to "
+                             "disable.")
     args = parser.parse_args(argv)
 
     if args.env_file:

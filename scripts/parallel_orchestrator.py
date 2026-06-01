@@ -420,6 +420,54 @@ def load_jobs_file(path: Path) -> list[dict]:
     return jobs
 
 
+# --- goal-metadata sidecars (Wave-4 --grounded support) -----------------
+
+def ensure_metadata_sidecars(jobs: list[dict]) -> None:
+    """Pre-build `<goal>.meta.json` for every job whose extra_args lack
+    --no-grounded. Sidecars are cheap (~1s freecadcmd, ~3s blender headless)
+    and idempotent. Failures are warnings, not aborts — the agent falls back
+    to the non-grounded path on a per-job basis if its sidecar is missing.
+    """
+    needs: list[tuple[Path, str]] = []   # (goal_png, app)
+    for j in jobs:
+        if "--no-grounded" in (j.get("extra_args") or []):
+            continue
+        gp = Path(j["goal_path"])
+        sidecar = gp.with_suffix(".meta.json")
+        if sidecar.exists():
+            continue
+        # Auto-detect app by which screenshots dir the path lives under
+        app = "blender" if "blender" in str(gp) else "freecad"
+        needs.append((gp, app))
+    if not needs:
+        return
+    print(f"\n[grounded] pre-extracting metadata for {len(needs)} goal asset(s)…")
+    import subprocess
+    extractor = Path(__file__).resolve().parent / "extract_goal_metadata.py"
+    src_root  = Path(__file__).resolve().parent.parent / "src"
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
+    from cua_smoketest.agent.evaluator import (  # noqa: E402
+        resolve_freecad_goal_asset, resolve_blender_goal_asset,
+    )
+    n_ok = n_miss = n_err = 0
+    for gp, app in needs:
+        resolver = resolve_freecad_goal_asset if app == "freecad" else resolve_blender_goal_asset
+        asset = resolver(gp)
+        if not asset or not asset.exists():
+            print(f"  [miss] no asset for {gp.name}"); n_miss += 1; continue
+        env = {**os.environ, "META_ASSET": str(asset), "META_OUT": str(gp.with_suffix(".meta.json"))}
+        cmd = ["freecadcmd", str(extractor)] if app == "freecad" else \
+              ["blender", "-b", "-noaudio", "-P", str(extractor)]
+        try:
+            subprocess.run(cmd, env=env, timeout=120,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
+            n_ok += 1
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            print(f"  [err ] {gp.name}: {type(exc).__name__}"); n_err += 1
+    print(f"[grounded] ok={n_ok} miss={n_miss} err={n_err}\n")
+
+
 # --- summary -------------------------------------------------------------
 
 def write_summary(run_dir: Path, results: list[JobResult]) -> tuple[Path, Path]:
@@ -564,6 +612,10 @@ def main(argv: list[str] | None = None) -> int:
         (run_dir / "jobs.jsonl").write_text(
             "\n".join(json.dumps(j) for j in jobs) + "\n"
         )
+
+    # Pre-extract goal metadata sidecars for any job using --grounded
+    # (default-on as of Wave-4). One-time cost per asset, idempotent.
+    ensure_metadata_sidecars(jobs)
 
     # Best-of-N: expand each job into N trials with _bo<i> suffix.
     # Each trial is otherwise identical; runs as a normal job. After the

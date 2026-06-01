@@ -94,11 +94,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="Wave-3: require PART_COUNT: N in rationale + multi-part decomposition.")
     parser.add_argument("--no-box-bias", action="store_true",
                         help="Wave-3: shape-taxonomy rule to counter build_box default.")
-    parser.add_argument("--grounded", action="store_true",
-                        help="Wave-4: inject pre-computed bbox + object_count + "
-                             "primitive_class metadata from <goal>.meta.json into the "
-                             "per-turn user message. Sidecar JSONs are produced by "
-                             "scripts/extract_goal_metadata.py before the run.")
+    parser.add_argument("--grounded", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Wave-4 (default ON): inject pre-computed bbox + "
+                             "object_count + primitive_class metadata from "
+                             "<goal>.meta.json into the per-turn user message. "
+                             "Sidecar JSONs are produced by "
+                             "scripts/extract_goal_metadata.py. Pass --no-grounded "
+                             "to disable (returns to pre-Wave-4 behavior).")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
