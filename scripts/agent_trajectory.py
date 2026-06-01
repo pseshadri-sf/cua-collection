@@ -102,6 +102,13 @@ def main(argv: list[str] | None = None) -> int:
                              "Sidecar JSONs are produced by "
                              "scripts/extract_goal_metadata.py. Pass --no-grounded "
                              "to disable (returns to pre-Wave-4 behavior).")
+    parser.add_argument("--decompose", action="store_true",
+                        help="Wave-4.1: when the sidecar has a `parts` list "
+                             "(object_count > 1, built via "
+                             "build_goal_metadata_sidecars.py --decompose), "
+                             "append a per-part bbox+origin table to "
+                             "GOAL_METADATA so the agent can emit one build_* "
+                             "per part instead of one big primitive.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -132,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         count_parts=args.count_parts,
         no_box_bias=args.no_box_bias,
         grounded=args.grounded,
+        decompose=args.decompose,
     )
     runner = AgentTrajectoryRunner(
         goal_png=Path(args.goal),

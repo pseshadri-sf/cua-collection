@@ -640,6 +640,33 @@ RULES:
      credit for a multi-part asset.
 """
 
+# Wave-4.1: per-part decomposition block. Appended to GOAL_METADATA when the
+# sidecar carries a `parts` array (i.e. the asset has object_count > 1 and
+# was decomposed by the build_goal_metadata_sidecars.py --decompose flag).
+# Lists each part's bbox + origin so the agent can emit one build_* per part
+# with the correct dimensions AND positions.
+_W4_DECOMPOSE_BLOCK = """
+PER-PART DECOMPOSITION (the {n_parts} largest parts, ordered by volume):
+{parts_table}
+{truncation_note}
+PER-PART BUILD RECIPE (MANDATORY for object_count > 1):
+  1. Emit one build_box / build_cylinder per part, in order, with the bbox
+     dims AND origin coordinates from the table above.
+  2. After all parts are built, emit ONE compound (preserves separate solids
+     for better topology credit) or fuse (single fused solid) over all the
+     part names.
+  3. Skip "guess one big box then terminate" — that strategy scored 0–50 on
+     multi-part assets in the prior sweep. Per-part decomposition is how you
+     earn the face_ratio and vert_ratio points.
+
+Example (3 parts of a hinge):
+  build_box(dims=[258, 41, 18],  origin=[-17, 0, 0],   name="part_00")
+  build_box(dims=[57, 201, 18],  origin=[-56, -80, 0], name="part_01")
+  build_cylinder(radius=8.7, height=84.5, axis="y",
+                 origin=[-8, -19, 0],     name="part_02")
+  compound(shapes=["part_00", "part_01", "part_02"], name="hinge")
+"""
+
 _W3_NO_BOX_BIAS = """
 SHAPE TAXONOMY RULE (no default to box — current pipeline overemits boxes
 in 58% of cases): identify the goal's primary geometric character by its
@@ -872,7 +899,8 @@ class OpenRouterVLMClient:
                  force_bool_on_voids: bool = False,
                  count_parts: bool = False,
                  no_box_bias: bool = False,
-                 grounded: bool = False):
+                 grounded: bool = False,
+                 decompose: bool = False):
         if not api_key:
             raise ValueError("OpenRouter API key is required")
         self.api_key = api_key
@@ -940,6 +968,11 @@ class OpenRouterVLMClient:
         # JSON pre-computed by scripts/extract_goal_metadata.py. Sidecar lives
         # next to the goal PNG at `<goal_stem>.meta.json`. Qwen-only.
         self._grounded = bool(grounded and self._is_qwen)
+        # Wave-4.1: decomposition. When --decompose and sidecar has a `parts`
+        # array, append the per-part block to GOAL_METADATA. Implies --grounded.
+        self._decompose = bool(decompose and self._is_qwen)
+        if self._decompose:
+            self._grounded = True
         self._metadata_cache: dict[str, dict[str, Any] | None] = {}
 
     # --- public API --------------------------------------------------------
@@ -1161,7 +1194,7 @@ class OpenRouterVLMClient:
         bn   = meta.get("bbox_normalized") or [0, 0, 0]
         unit = "mm" if meta.get("app") == "freecad" else "units"
         try:
-            return _W4_GROUNDED_HEADER.format(
+            header = _W4_GROUNDED_HEADER.format(
                 klass  = meta.get("dominant_primitive_class", "unknown"),
                 n_obj  = meta.get("object_count", 1),
                 unit   = unit,
@@ -1171,6 +1204,27 @@ class OpenRouterVLMClient:
                 n_vert = meta.get("vertex_count", "?"),
                 desc   = meta.get("shape_descriptor", ""),
             )
+            parts = meta.get("parts") if self._decompose else None
+            if parts:
+                rows = []
+                for p in parts:
+                    bb = p.get("bbox") or [0, 0, 0]
+                    og = p.get("origin") or [0, 0, 0]
+                    rows.append(
+                        f"  [{p.get('index',0):>2}] {p.get('name','?'):<14} "
+                        f"bbox=[{bb[0]:>8.2f}, {bb[1]:>8.2f}, {bb[2]:>8.2f}] "
+                        f"origin=[{og[0]:>7.1f}, {og[1]:>7.1f}, {og[2]:>7.1f}]  "
+                        f"faces={p.get('face_count','?')}"
+                    )
+                truncation = ""
+                if meta.get("parts_truncated"):
+                    truncation = f"  ... and {meta['parts_truncated']} more parts (smaller volume) — build the {len(parts)} above; skip the rest.\n"
+                header += _W4_DECOMPOSE_BLOCK.format(
+                    n_parts = len(parts),
+                    parts_table = "\n".join(rows),
+                    truncation_note = truncation,
+                )
+            return header
         except (IndexError, KeyError, ValueError) as exc:
             print(f"[grounded] WARN failed to render metadata for "
                   f"{goal_png.name}: {type(exc).__name__}: {exc}",

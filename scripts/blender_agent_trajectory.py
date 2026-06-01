@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Wave-4 (default ON): inject pre-computed GOAL_METADATA "
                              "from <goal>.meta.json sidecar. Pass --no-grounded to "
                              "disable.")
+    parser.add_argument("--decompose", action="store_true",
+                        help="Wave-4.1: append per-part bbox+origin table to "
+                             "GOAL_METADATA when the sidecar has a `parts` list.")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -97,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         count_parts=args.count_parts,
         no_box_bias=args.no_box_bias,
         grounded=args.grounded,
+        decompose=args.decompose,
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),
