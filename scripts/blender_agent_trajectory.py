@@ -60,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Wave-2: force typed-tool emission.")
     parser.add_argument("--few-shot-delayed", action="store_true",
                         help="Wave-2: 2-example few-shot from step 2+.")
+    parser.add_argument("--dim-estimate", action="store_true")
+    parser.add_argument("--force-bool-on-voids", action="store_true")
+    parser.add_argument("--count-parts", action="store_true")
+    parser.add_argument("--no-box-bias", action="store_true")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -83,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
         tool_calling_required=args.tool_calling_required,
         few_shot=args.few_shot,
         few_shot_delayed=args.few_shot_delayed,
+        dim_estimate=args.dim_estimate,
+        force_bool_on_voids=args.force_bool_on_voids,
+        count_parts=args.count_parts,
+        no_box_bias=args.no_box_bias,
     )
     runner = BlenderAgentTrajectoryRunner(
         goal_png=Path(args.goal),

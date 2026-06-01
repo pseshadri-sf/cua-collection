@@ -568,6 +568,67 @@ Pattern: select_all + delete (clears default cube) + ONE python_eval that
 chains N primitive_*_add calls for multi-part scenes. Use bpy.ops, not raw bmesh.
 """
 
+# Wave-3 grounded-prompt interventions. Each is appended only when its CLI flag
+# is set. Designed to target the four taxonomized failure modes:
+#   --dim-estimate           dimension estimation (FC vol_ratio: 0.15 → ?)
+#   --force-bool-on-voids    boolean composition for voids (bracket, pulley)
+#   --count-parts            multi-part decomposition awareness (kitbash, hinge)
+#   --no-box-bias            counter the box-default (58% of typed-action picks)
+_W3_DIM_ESTIMATE = """
+DIMENSION-ESTIMATE-FIRST RULE: Before EVERY geometry-producing action
+(python_eval / build_*), your `rationale` field MUST begin with:
+  BBOX_ESTIMATE: WxDxH = <num> x <num> x <num> mm
+  (or RADIUS=R, HEIGHT=H for cylinders / sphere R)
+Then explain in one sentence HOW you read those numbers off the goal image
+(e.g., "door panel — visually about as tall as a person ≈ 2100mm, ~3× width").
+The numbers in BBOX_ESTIMATE must appear VERBATIM in the action's parameters.
+Template defaults like makeBox(100,60,10) score < 5% vol_ratio on this
+pipeline — every untyped number is a guaranteed point loss.
+"""
+
+_W3_FORCE_BOOL_ON_VOIDS = """
+VOID DETECTION RULE: Examine the goal for VOIDS — visible holes, bores,
+slots, inset cavities, or "negative space" inside the silhouette. If you
+see ANY void:
+  - DO NOT emit a single build_box / build_cylinder and terminate. The void
+    is the entire reason this asset isn't a simple primitive.
+  - Use a cut pattern (2 builds + cut):
+      bracket-with-hole: build_box + build_cylinder + cut
+      pulley:            build_cylinder (disk) + build_cylinder (bore) + cut
+      tray / shower pad: build_box (outer) + build_box (inset) + cut
+      door with knob:    build_box (panel) + build_cylinder (hole) + cut
+If the goal has NO visible voids (solid block, single primitive), skip this.
+"""
+
+_W3_COUNT_PARTS = """
+PART-COUNT RULE: Before emitting your first geometry action, COUNT the
+distinct visible parts in the goal — separate pieces that don't share a
+surface. State the count in your rationale: "PART_COUNT: N".
+  - N=1: build one primitive (simple goals: cube, sphere, single panel).
+  - N=2-5: build N primitives separately, then compound(shapes=[...]).
+    Examples: hinge 3 parts, table 5, chair 5-6, kitbash 5.
+  - N=6+: build the dominant N (largest by volume), ignore tiny details.
+COUNT MULTIPLY: legs, arms, racks, slats, posts — each visible identical
+copy is a separate part.
+"""
+
+_W3_NO_BOX_BIAS = """
+SHAPE TAXONOMY RULE (no default to box — current pipeline overemits boxes
+in 58% of cases): identify the goal's primary geometric character by its
+silhouette and pick:
+  - ROUND plan view, straight extrusion → build_cylinder
+  - SPHERICAL → build_sphere
+  - RING/DONUT → build_torus
+  - RECTILINEAR, sharp edges, no curves → build_box
+  - CURVED ALONG LONG AXIS (baluster, lampshade, bottle, vase) → python_eval
+    with Part.makeRevolution (escape hatch — boxes/cylinders cannot capture)
+  - REPETITIVE radial features (gear teeth, spokes) → multiple build_cylinder
+    calls in a loop
+ASK YOURSELF before committing: is this goal STRAIGHT-EDGED or CURVED? If
+curved, build_box is wrong.
+"""
+
+
 # Wave-2 #2: shorter (2-example) few-shot to mitigate the Wave-1 loop-kill regression.
 # Plus: delayed injection — only attach from step 2+, so the agent's first action
 # isn't dominated by a verbatim copy of an example.
@@ -778,7 +839,11 @@ class OpenRouterVLMClient:
                  tool_calling: bool = False,
                  tool_calling_required: bool = False,
                  few_shot: bool = False,
-                 few_shot_delayed: bool = False):
+                 few_shot_delayed: bool = False,
+                 dim_estimate: bool = False,
+                 force_bool_on_voids: bool = False,
+                 count_parts: bool = False,
+                 no_box_bias: bool = False):
         if not api_key:
             raise ValueError("OpenRouter API key is required")
         self.api_key = api_key
@@ -836,6 +901,11 @@ class OpenRouterVLMClient:
         # regression seen in Wave-1 fs variant.
         self._few_shot = bool(few_shot and self._is_qwen)
         self._few_shot_delayed = bool(few_shot_delayed and self._is_qwen)
+        # Wave-3 grounded-prompt interventions (Qwen-only).
+        self._dim_estimate = bool(dim_estimate and self._is_qwen)
+        self._force_bool_on_voids = bool(force_bool_on_voids and self._is_qwen)
+        self._count_parts = bool(count_parts and self._is_qwen)
+        self._no_box_bias = bool(no_box_bias and self._is_qwen)
 
     # --- public API --------------------------------------------------------
 
@@ -863,9 +933,16 @@ class OpenRouterVLMClient:
             if self._few_shot:
                 user_text += "\n" + (_FEW_SHOT_BL if self._app == "blender" else _FEW_SHOT_FC)
             elif self._few_shot_delayed and step_idx >= 2:
-                # Wave-2 #2: shorter examples, only from step 2+ to avoid
-                # anchoring the first action on a verbatim example.
                 user_text += "\n" + (_FEW_SHOT_BL_SHORT if self._app == "blender" else _FEW_SHOT_FC_SHORT)
+            # Wave-3 grounded-prompt interventions (each is opt-in).
+            if self._dim_estimate:
+                user_text += "\n" + _W3_DIM_ESTIMATE
+            if self._force_bool_on_voids:
+                user_text += "\n" + _W3_FORCE_BOOL_ON_VOIDS
+            if self._count_parts:
+                user_text += "\n" + _W3_COUNT_PARTS
+            if self._no_box_bias:
+                user_text += "\n" + _W3_NO_BOX_BIAS
 
         messages = [
             {"role": "system", "content": system_prompt},

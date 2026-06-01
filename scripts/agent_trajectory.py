@@ -85,6 +85,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--few-shot-delayed", action="store_true",
                         help="Wave-2: 2-example few-shot injected only from "
                              "step 2+ to avoid first-action anchoring.")
+    # Wave-3 grounded-prompt interventions
+    parser.add_argument("--dim-estimate", action="store_true",
+                        help="Wave-3: require BBOX_ESTIMATE: prefix in rationale.")
+    parser.add_argument("--force-bool-on-voids", action="store_true",
+                        help="Wave-3: prompt rule to use cut pattern when goal has voids.")
+    parser.add_argument("--count-parts", action="store_true",
+                        help="Wave-3: require PART_COUNT: N in rationale + multi-part decomposition.")
+    parser.add_argument("--no-box-bias", action="store_true",
+                        help="Wave-3: shape-taxonomy rule to counter build_box default.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -110,6 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         tool_calling_required=args.tool_calling_required,
         few_shot=args.few_shot,
         few_shot_delayed=args.few_shot_delayed,
+        dim_estimate=args.dim_estimate,
+        force_bool_on_voids=args.force_bool_on_voids,
+        count_parts=args.count_parts,
+        no_box_bias=args.no_box_bias,
     )
     runner = AgentTrajectoryRunner(
         goal_png=Path(args.goal),
