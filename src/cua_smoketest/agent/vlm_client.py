@@ -640,6 +640,55 @@ RULES:
      credit for a multi-part asset.
 """
 
+# Wave-5 F1+F2: FC surface + curve taxonomy block. Replaces the brittle
+# dominant_primitive_class hint with exact surface-mix info and per-surface
+# construction parameters (Cylinder.radius, Cone.semi_angle, etc.).
+_W5_FC_SURFACES_BLOCK = """
+FC SURFACE TAXONOMY (exact face-type histogram + sample params):
+  surface_counts: {surface_counts}
+  edge_curve_counts: {curve_counts}
+  representative_surfaces:
+{surface_samples}
+
+USE THIS TO CHOOSE THE RIGHT CONSTRUCTION:
+  • {{'Plane': 6}}                       → makeBox (rectilinear)
+  • {{'Plane': N, 'Cylinder': 1}} for N≥5 → N-sided prism with a bore: build
+                                           with Part.makePolygon + Part.Extrude,
+                                           then cut a Part.makeCylinder
+  • {{'Cylinder': K}} only                → makeCylinder (K planes is the caps)
+  • {{'Sphere': 1}}                       → makeSphere
+  • {{'Toroid': 1}}                       → makeTorus (read major/minor from samples)
+  • presence of 'Cone'                  → chamfer/taper: makeCone or revolve
+  • presence of 'BSplineSurface' / 'SurfaceOfRevolution'
+                                        → python_eval escape hatch
+                                          (Part.makeRevolution / loft / sweep)
+  • presence of 'Toroid' alongside 'Cylinder' → fillets/rounds on a cylindrical edge
+"""
+
+# Wave-5 B1+B2+B3: BL per-object info block. Replaces the bare bbox+origin
+# table with rotation, type discrimination (FONT/CURVE/META — totally
+# different bpy APIs from MESH primitives), and modifier-stack reconstruction
+# parameters (ARRAY count, SCREW offset/angle, BOOLEAN operation, etc.).
+_W5_BL_OBJECTS_BLOCK = """
+BL PER-OBJECT METADATA (use these EXACT values; do not guess from the screenshot):
+  object_types_present: {types_present}
+{objects_table}
+
+PER-TYPE CONSTRUCTION HINTS:
+  type=MESH      → bpy.ops.mesh.primitive_<cube|uv_sphere|cylinder|torus|cone>_add
+                    with location=loc, rotation=rotation_euler, then scale to dimensions
+  type=FONT      → bpy.ops.object.text_add(location=loc); active.data.body=<body>;
+                    active.data.size=<size>; active.data.extrude=<extrude>
+                    (skip if you only build mesh primitives — score will be ~0)
+  type=CURVE     → bpy.ops.curve.primitive_bezier_curve_add OR bpy.ops.curve.primitive_nurbs_curve_add
+                    then set data.extrude / data.bevel_depth for thickness
+  type=META      → bpy.ops.object.metaball_add at each element's location
+  modifiers      → after primitive_*_add, do
+                    m = obj.modifiers.new('m', '<TYPE>'); set the parameters listed.
+                    Modifier params (ARRAY count, SCREW angle/steps, BEVEL width/segments,
+                    SUBSURF levels, BOOLEAN operation/object) MUST be copied verbatim.
+"""
+
 # Wave-4.1: per-part decomposition block. Appended to GOAL_METADATA when the
 # sidecar carries a `parts` array (i.e. the asset has object_count > 1 and
 # was decomposed by the build_goal_metadata_sidecars.py --decompose flag).
@@ -1204,6 +1253,51 @@ class OpenRouterVLMClient:
                 n_vert = meta.get("vertex_count", "?"),
                 desc   = meta.get("shape_descriptor", ""),
             )
+            # Wave-5 F1+F2: FC surface + curve taxonomy (always-on when present)
+            if meta.get("app") == "freecad" and meta.get("surface_taxonomy"):
+                st = meta["surface_taxonomy"]
+                samples = st.get("samples") or []
+                sample_lines = []
+                for s in samples[:8]:
+                    parts_str = ", ".join(f"{k}={v}" for k, v in s.items()
+                                          if k not in ("type",))
+                    sample_lines.append(f"    {s.get('type','?'):<20}  {parts_str}")
+                header += _W5_FC_SURFACES_BLOCK.format(
+                    surface_counts = st.get("counts", {}),
+                    curve_counts   = meta.get("curve_taxonomy", {}),
+                    surface_samples = "\n".join(sample_lines) or "    (none)",
+                )
+
+            # Wave-5 B1+B2+B3: BL per-object enriched info
+            if meta.get("app") == "blender" and meta.get("objects_meta"):
+                rows = []
+                for o in meta["objects_meta"][:14]:
+                    base = (f"  [{o.get('type','?'):<6}] {o.get('name','?'):<14} "
+                            f"loc={o.get('location')} "
+                            f"rot_deg={o.get('rotation_deg')} "
+                            f"dims={o.get('dimensions')}")
+                    rows.append(base)
+                    if o.get("text"):
+                        t = o["text"]
+                        rows.append(f"            └ text: body={t.get('body')!r} "
+                                    f"size={t.get('size')} extrude={t.get('extrude')}")
+                    if o.get("curve"):
+                        c = o["curve"]
+                        rows.append(f"            └ curve: dims={c.get('dimensions')} "
+                                    f"extrude={c.get('extrude')} bevel={c.get('bevel_depth')} "
+                                    f"splines={c.get('splines')}")
+                    if o.get("modifiers"):
+                        for m in o["modifiers"]:
+                            params = ", ".join(f"{k}={v}" for k, v in m.items()
+                                               if k not in ("name", "type"))
+                            rows.append(f"            └ modifier {m['type']}: {params}")
+                if len(meta["objects_meta"]) > 14:
+                    rows.append(f"  ... and {len(meta['objects_meta'])-14} more objects")
+                header += _W5_BL_OBJECTS_BLOCK.format(
+                    types_present = meta.get("object_types_present", []),
+                    objects_table = "\n".join(rows),
+                )
+
             parts = meta.get("parts") if self._decompose else None
             if parts:
                 rows = []
