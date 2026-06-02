@@ -339,19 +339,100 @@ random-seed noise; not material.
 - Per-job wall time: ~60-100s for short trajectories, ~3-6 min for full
   35-step runs. Comparable to W6.
 
-### Verdict
+### Verdict (subset)
 
-**Ship S3.** Substantial lift across both apps on the hardest assets,
-no regression, no infra cost beyond a one-time per-asset pre-render.
-The multi-view image is the agent's new "goal" — fail-silent: assets
-without an atlas keep the original iso behavior.
+On the 20 hardest scoreable jobs, S3 is a substantial win. **But this
+result is biased by the subset selection** — see full-50 below.
 
-### Next: S2 is the obvious follow-on
+## Results — Wave-7 full 47-job run (extension)
 
-Of the 7 ties this run, 6 were `agent_loop_detected` — the universal
-failure mode that S3 cannot touch. S2 (post-build geometry feedback)
-directly addresses it. With both S2 + S3 we'd likely flip most of those
-7 ties into wins, putting overall mean above 65.
+**Run:** `/home/ubuntu/cua_gui_smoketest/runs/wave7_20260602T021234Z/`
+(extended with the remaining 28 W6 jobs after the subset benchmark
+showed a clear lift on the hardest set).
 
-Risk: S2 needs ~300 LOC across action executors. Recommendation: scope
-S2 as Wave-8 in a fresh branch; keep this branch's S3 win clean.
+### Aggregate
+
+| Metric | W6 baseline | W7 (S3) | Δ |
+|---|---|---|---|
+| Overall mean (n=47) | 69.3 | **69.9** | **+0.6** |
+| Blender mean (n=25) | 83.8 | **82.3** | **−1.5** |
+| FreeCAD mean (n=22) | 52.8 | **55.7** | **+2.9** |
+| Wins / Losses / Ties | — | 14 / 11 / 22 | — |
+
+### What changed when we expanded from 22 → 47
+
+The 22-hardest subset is dominated by FC revolutions + BL lattices —
+exactly the silhouette-ambiguous class where multi-view shines. The
+remaining 28 includes many already-easy Blender wins (single primitives,
+small primitive groups) where the single iso was already sufficient.
+
+### The new regressions (introduced by S3 on easy assets)
+
+| Job | App | W6 | W7 | Δ | Hypothesis |
+|---|---|---|---|---|---|
+| `bl__43_dense_scatter_100` | BL | 89.3 | 51.7 | **−37.6** | 100-sphere scatter; agent confused by per-view counts |
+| `bl__49_nested_spheres` | BL | 100.0 | 80.3 | **−19.7** | concentric spheres; ortho top view obscures inner structure |
+| `bl__10_sphere_ring` | BL | 100.0 | 86.5 | **−13.5** | top view collapses ring to circle; agent guesses one sphere |
+| `bl__36_torus_tower` | BL | 95.4 | 85.4 | **−10.0** | stacked tori; iso was already clear |
+| `bl__46_organic_blob` | BL | 100.0 | 93.0 | **−7.0** | metaball; multi-view introduces noise |
+
+These regressions are all from Blender's easy class. The multi-view
+introduces an extra cognitive load on the agent (parse 4 views,
+reconcile) that's a net cost when iso was already telling the truth.
+
+### Honest verdict
+
+S3 is **net-positive on FreeCAD** (+2.9) and **net-negative on Blender**
+(−1.5). Overall barely moves. The win on the hardest 20 was real but
+NOT representative of the broader distribution.
+
+**Action:** do not ship S3 unconditionally. Either:
+
+1. **Gate it** — only activate multi-view when sidecar detects a
+   silhouette-ambiguous goal:
+   - FC: `surface_taxonomy.counts` contains `BSplineSurface`,
+     `SurfaceOfRevolution`, `Cone`, or `Toroid`; OR a connector/SMD
+     pattern (multi-pin layouts).
+   - BL: `object_count > 20` (lattice/scatter class) AND object_types
+     are heterogeneous; OR the asset name matches text-class keywords.
+   - Skip multi-view for: BL `object_count ≤ 5` AND single-primitive
+     `dominant_primitive_class`.
+
+   Estimated effort: ~30 LOC in `_resolve_goal_png`; expected to recover
+   the +5 hardest-subset lift while killing the easy-asset regression.
+
+2. **Reduce atlas resolution** — currently each tile is 640×480 (atlas
+   ~1290×1020 → downscaled to 1024×808 at the VLM). For easy assets,
+   the larger payload alone may be slowing first-token latency enough
+   to cause the agent to terminate early or skip steps. Cutting tiles
+   to 480×360 (atlas 960×760) might halve the regression.
+
+3. **Both** — gate + smaller tiles.
+
+### Updated branch recommendation
+
+Do **not** merge `text-to-cad` to `tool-calling` as-is. The unconditional
+S3 hurts a meaningful slice of the BL baseline. Instead:
+
+1. Land the **infrastructure** (`render_goal_multiview.py`, the
+   `_resolve_goal_png` plumbing, `compare_waves.py`, TODO doc) — all
+   safe, no behavior change without the cache.
+2. Add the **gating logic** as a follow-up Wave-7.1 commit that
+   conditions atlas activation on sidecar shape-class. Re-benchmark.
+3. Decide on merge after Wave-7.1 result.
+
+### Why this also reframes S2's priority
+
+S2 (post-build feedback) addresses `agent_loop_detected` — the universal
+failure mode across BOTH the assets that win and those that lose with
+multi-view. It would likely lift the regressed BL assets back to baseline
+(the agent terminates early because it can't see what it built —
+post-build feedback gives it that information). So S2 is now the
+**primary** next-wave priority over Wave-7.1.
+
+| Priority | Item | Expected lift on full 47 | Cost |
+|---|---|---|---|
+| 1 | **S2 post-build feedback** | +5 to +10 across both apps; closes loop-kills | ~300 LOC |
+| 2 | Wave-7.1 — gated S3 | Recover +3 from current −0 on easy assets | ~30 LOC |
+| 3 | A2 repair loop (needs S2) | +2 to +5 on syntax/scale/fillet failures | ~130 LOC |
+| 4 | S5 build123d DSL | Largest single-shot quality lift | ~600 LOC |
