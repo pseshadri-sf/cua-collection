@@ -143,7 +143,11 @@ class BlenderAgentTrajectoryRunner:
                  blender_post_launch_delay: float = 8.0,
                  post_action_delay: float = 0.6,
                  history_window: int = 10,
-                 loop_kill_repeats: int = 3,
+                 # Wave-8: bump 3->5, parallel to FC runner. BL doesn't
+                 # auto-inject frame_all (BL python_eval already updates
+                 # viewport correctly in most cases), but the extra retries
+                 # still help on edge cases.
+                 loop_kill_repeats: int = 5,
                  escalate_at_step: int = 0,
                  escalate_to_effort: str = "high"):
         self.goal_png = Path(goal_png).resolve()
@@ -243,6 +247,29 @@ class BlenderAgentTrajectoryRunner:
                     shot.path.rename(current_png)
 
                 hist_hint = self._format_history(steps[-self.history_window:])
+                # Wave-8 item 3: anti-loop directive when last 2 python_evals
+                # are identical (excluding auto-injected steps).
+                recent_eval_codes = [
+                    (s.action or {}).get("code")
+                    for s in steps[-6:]
+                    if (s.action or {}).get("type") == "python_eval"
+                    and not (s.action or {}).get("_auto")
+                ]
+                if len(recent_eval_codes) >= 2 and recent_eval_codes[-1] == recent_eval_codes[-2]:
+                    hist_hint = (
+                        "ANTI-LOOP DIRECTIVE: Your last 2+ python_eval payloads "
+                        "are IDENTICAL. The Blender viewport already shows the "
+                        "result of the previous execution. Re-emitting the same "
+                        "code will trigger loop-kill at the 3rd identical attempt. "
+                        "Your NEXT action MUST be one of:\n"
+                        "  - {\"type\":\"terminate\"} if CURRENT_STATE matches GOAL_STATE\n"
+                        "  - {\"type\":\"python_eval\",\"code\":...} with DIFFERENT code "
+                        "(repair scale, add a missing primitive, fix axis)\n"
+                        "  - {\"type\":\"frame_all\"} if the viewport is still showing "
+                        "stale geometry off-screen\n"
+                        "Do NOT re-emit the same python_eval a third time.\n\n"
+                        + hist_hint
+                    )
                 try:
                     resp = self.vlm.next_action(
                         system_prompt=system_prompt,
@@ -311,6 +338,20 @@ class BlenderAgentTrajectoryRunner:
                     usage=resp.usage,
                     exec_error=exec_result.error,
                 ))
+                # Wave-8: synthetic frame_all injection after successful
+                # python_eval (parallel to FC runner change). BL doesn't have
+                # a viewport-staleness bug to the same degree, but the synthetic
+                # step still breaks the loop-detector when the agent retries
+                # identical code.
+                if (isinstance(action, dict)
+                        and action.get("type") == "python_eval"
+                        and exec_result.ok):
+                    steps.append(TrajectoryStep(
+                        step_idx=step_idx,
+                        action_time=after_t,
+                        action={"type": "frame_all", "_auto": True},
+                        rationale="(auto-injected after python_eval)",
+                    ))
 
                 # Loop-kill: same payload N times in a row → force-terminate.
                 if self.loop_kill_repeats >= 2:

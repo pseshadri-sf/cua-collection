@@ -149,7 +149,11 @@ class AgentTrajectoryRunner:
                  freecad_post_launch_delay: float = 4.0,
                  post_action_delay: float = 0.6,
                  history_window: int = 10,
-                 loop_kill_repeats: int = 3,
+                 # Wave-8: bumped from 3 -> 5 to give the agent extra retries
+                 # after viewport auto-fit (item A in action_space.py) puts
+                 # the built geometry on screen, which often takes 1-2 turns
+                 # for the agent to recognize.
+                 loop_kill_repeats: int = 5,
                  escalate_at_step: int = 0,
                  escalate_to_effort: str = "high"):
         self.goal_png = Path(goal_png).resolve()
@@ -259,6 +263,32 @@ class AgentTrajectoryRunner:
                     shot.path.rename(current_png)
 
                 hist_hint = self._format_history(steps[-self.history_window:])
+                # Wave-8 item 3: if recent history has >=2 python_evals
+                # (excluding auto-frame injections) without a terminate, prepend
+                # an anti-loop directive so the agent breaks out of the
+                # build-then-build pattern instead of retrying identical code.
+                recent_eval_codes = [
+                    (s.action or {}).get("code")
+                    for s in steps[-6:]
+                    if (s.action or {}).get("type") == "python_eval"
+                    and not (s.action or {}).get("_auto")
+                ]
+                if len(recent_eval_codes) >= 2 and recent_eval_codes[-1] == recent_eval_codes[-2]:
+                    hist_hint = (
+                        "ANTI-LOOP DIRECTIVE: Your last 2+ python_eval payloads "
+                        "are IDENTICAL. The executor already framed the viewport "
+                        "after each (via Gui.SendMsgToActiveView('ViewFit') + "
+                        "frame keys). Re-emitting the same code AGAIN will not "
+                        "create different geometry and will trigger loop-kill. "
+                        "Your NEXT action MUST be one of:\n"
+                        "  - {\"type\":\"terminate\"} if CURRENT_STATE matches GOAL_STATE\n"
+                        "  - {\"type\":\"python_eval\",\"code\":...} with DIFFERENT code "
+                        "(repair scale, add a missing feature, fix a wrong axis)\n"
+                        "  - {\"type\":\"frame_view\"} only if you genuinely think the "
+                        "viewport is still showing stale content\n"
+                        "Do NOT re-emit the same python_eval code a third time.\n\n"
+                        + hist_hint
+                    )
                 try:
                     resp = self.vlm.next_action(
                         system_prompt=system_prompt,
@@ -330,6 +360,23 @@ class AgentTrajectoryRunner:
                     usage=resp.usage,
                     exec_error=exec_result.error,
                 ))
+                # Wave-8: after a successful python_eval, inject a synthetic
+                # frame_view step into the history. The python_eval executor
+                # already does the framing (action_space.py items A+B), so
+                # this is a HISTORY-ONLY record — no actual UI action runs.
+                # Purpose: break the loop-detection signal (which counts
+                # identical agent-emitted actions in `steps`) when the agent
+                # repeats python_eval, AND surface the framing to the agent
+                # in its history hint so it can choose `terminate` next.
+                if (isinstance(action, dict)
+                        and action.get("type") == "python_eval"
+                        and exec_result.ok):
+                    steps.append(TrajectoryStep(
+                        step_idx=step_idx,  # share step_idx; no extra turn
+                        action_time=after_t,
+                        action={"type": "frame_view", "_auto": True},
+                        rationale="(auto-injected: viewport was framed inside the python_eval executor)",
+                    ))
                 if not exec_result.ok:
                     # Don't terminate on a single bad action — let the agent
                     # observe the unchanged state and try again.
