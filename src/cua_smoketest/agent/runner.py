@@ -140,6 +140,79 @@ class TrajectoryResult:
     error: str | None = None
 
 
+# Wave-9 S2: executed inside the FreeCAD Python console after every build.
+# Dumps each solid's bbox center + dims so the runner can prove to the agent
+# that its code DID execute (refuting the "viewport stale -> re-run" loop) and
+# can detect parts stacked at the origin.
+_STATE_PROBE_SRC = '''\
+import json as _J, FreeCAD as _FC
+_d = _FC.ActiveDocument
+_objs = []
+for _o in (_d.Objects if _d else []):
+    _sh = getattr(_o, "Shape", None)
+    try:
+        if _sh is None or _sh.isNull():
+            continue
+        _bb = _sh.BoundBox
+        _objs.append({
+            "name": _o.Name,
+            "center": [round(_bb.Center.x, 1), round(_bb.Center.y, 1), round(_bb.Center.z, 1)],
+            "dims": [round(_bb.XLength, 1), round(_bb.YLength, 1), round(_bb.ZLength, 1)],
+        })
+    except Exception:
+        pass
+_J.dump({"n": len(_objs), "objects": _objs}, open(r"__STATE_JSON__", "w"))
+'''
+
+
+def _build_agent_state_hint(state: dict) -> str:
+    """Turn a probe readout into an AGENT_STATE block (+ A2 repair recipe when
+    the built parts are stacked at one point). Returns '' if nothing useful."""
+    objs = state.get("objects") or []
+    n = state.get("n", len(objs))
+    if n == 0:
+        return (
+            "AGENT_STATE: your last python_eval produced ZERO objects in the "
+            "document. The code ran but built nothing visible — check that you "
+            "added the shape to the document and called doc.recompute(). Emit "
+            "DIFFERENT code; do not re-run the same payload.\n\n"
+        )
+    lines = [
+        f"  {o['name']}: center={o['center']} dims={o['dims']}"
+        for o in objs[:8]
+    ]
+    if len(objs) > 8:
+        lines.append(f"  ... (+{len(objs) - 8} more)")
+    hint = (
+        f"AGENT_STATE (ground truth read back from the FreeCAD document after "
+        f"your last build): {n} object(s) exist —\n"
+        + "\n".join(lines)
+        + "\nYour code DID execute and these solids are real. If the viewport "
+        "looks empty or wrong, that is a FRAMING issue, NOT a reason to re-run "
+        "identical code. If these objects do not match the goal, change your "
+        "code (dimensions, positions, or primitive type).\n"
+    )
+    # A2: stacking detector — >=2 objects whose centers cluster within half the
+    # largest part dimension means everything was built at the origin with no
+    # translate, which renders as a single blob.
+    if len(objs) >= 2:
+        cs = [o["center"] for o in objs]
+        span = max(max(c[i] for c in cs) - min(c[i] for c in cs) for i in range(3))
+        maxdim = max((max(o["dims"]) for o in objs), default=1.0) or 1.0
+        if span < 0.5 * maxdim:
+            hint += (
+                "\nMISSING_TRANSLATIONS: your "
+                f"{len(objs)} parts are all centered at ~the same point — they "
+                "are stacked at the origin, so they look like one object. A "
+                "multi-part goal needs each part MOVED to its own position. "
+                "Apply a translate to every part BEFORE adding it, using the "
+                "origin from PER-PART DECOMPOSITION, e.g.:\n"
+                "  p1.translate(App.Vector(X, Y, Z))\n"
+                "Re-emitting the same stacked code will NOT fix this.\n"
+            )
+    return hint + "\n"
+
+
 class AgentTrajectoryRunner:
     def __init__(self, *, goal_png: Path, output_dir: Path,
                  vlm: OpenRouterVLMClient,
@@ -207,7 +280,15 @@ class AgentTrajectoryRunner:
             freecad_binary=freecad_bin,
         )
         capture = ScreenshotCapture(shots_dir)
-        executor = ActionExecutor()
+
+        # Wave-9 S2: write the document-state probe and point the executor at
+        # it. After each python_eval the probe dumps the live ActiveDocument
+        # object bboxes to agent_state.json, which we read back below to build
+        # an AGENT_STATE hint for the next turn.
+        state_json_path = self.output_dir / "agent_state.json"
+        probe_path = self.output_dir / "_state_probe.py"
+        probe_path.write_text(_STATE_PROBE_SRC.replace("__STATE_JSON__", str(state_json_path)))
+        executor = ActionExecutor(state_probe_path=str(probe_path))
 
         recorder = ScreenRecorder(
             display=session.display,
@@ -218,6 +299,9 @@ class AgentTrajectoryRunner:
         steps: list[TrajectoryStep] = []
         terminated_by = "max_steps"
         error: str | None = None
+        # Wave-9 S2: AGENT_STATE block built from the last python_eval's probe
+        # readout, injected at the top of the next turn's history hint.
+        agent_state_hint = ""
         system_prompt = SYSTEM_PROMPT_TMPL.format(action_space=ACTION_SPACE_SPEC)
 
         try:
@@ -289,6 +373,10 @@ class AgentTrajectoryRunner:
                         "Do NOT re-emit the same python_eval code a third time.\n\n"
                         + hist_hint
                     )
+                # Wave-9 S2/A2: prepend the document-state readout (+ stacking
+                # repair recipe) from the previous build so it leads the hint.
+                if agent_state_hint:
+                    hist_hint = agent_state_hint + hist_hint
                 try:
                     resp = self.vlm.next_action(
                         system_prompt=system_prompt,
@@ -377,6 +465,14 @@ class AgentTrajectoryRunner:
                         action={"type": "frame_view", "_auto": True},
                         rationale="(auto-injected: viewport was framed inside the python_eval executor)",
                     ))
+                    # Wave-9 S2/A2: read back the document state the probe just
+                    # wrote and build the AGENT_STATE hint for the next turn.
+                    agent_state_hint = ""
+                    try:
+                        state = json.loads(state_json_path.read_text())
+                        agent_state_hint = _build_agent_state_hint(state)
+                    except (OSError, ValueError):
+                        pass  # probe didn't write / malformed — skip this turn
                 if not exec_result.ok:
                     # Don't terminate on a single bad action — let the agent
                     # observe the unchanged state and try again.

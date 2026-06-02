@@ -175,11 +175,17 @@ class ActionExecutor:
     pyautogui is imported lazily so DISPLAY can be set first by the caller.
     """
 
-    def __init__(self):
+    def __init__(self, state_probe_path: "str | None" = None):
         import pyautogui  # noqa: PLC0415
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.05
         self._pg = pyautogui
+        # Wave-9 S2: when set, every python_eval also exec()s this on-disk
+        # probe script in the FreeCAD console. The probe writes the live
+        # ActiveDocument object bboxes to a JSON sidecar, which the runner
+        # reads back and injects as AGENT_STATE on the next turn (refutes the
+        # "build didn't take effect" loop + exposes parts stacked at origin).
+        self._state_probe_path = state_probe_path
 
     def execute(self, action: dict[str, Any]) -> ExecutionResult:
         if not isinstance(action, dict) or "type" not in action:
@@ -320,6 +326,12 @@ class ActionExecutor:
         # Wave-8 item A: append ViewFit via the Python console (deterministic,
         # doesn't depend on viewport focus state).
         code_with_fit = code.rstrip(" ;") + ";Gui.SendMsgToActiveView('ViewFit')"
+        # Wave-9 S2: append a state-probe exec on the SAME console line. Kept
+        # short (the probe body lives in an on-disk .py) so it doesn't bloat
+        # the typed string. exec() failures only print to the console; they
+        # never affect the agent's build.
+        if self._state_probe_path:
+            code_with_fit += ";exec(open(r'%s').read())" % self._state_probe_path
         # 1. Open the Python console (idempotent).
         seq = MENU_PATHS.get(("View", "Panels", "Python console"))
         if seq is not None:

@@ -351,6 +351,11 @@ def run_one_job(slot: WorkerSlot, job: dict, args, shutdown: threading.Event,
     if status != "timed_out" and traj_path.exists():
         if terminated_by in ("agent", "max_steps"):
             status = "succeeded"
+        elif terminated_by == "agent_loop_detected":
+            # Wave-9: loop-kill fired after a valid build was produced. The
+            # geometry is real (often correct) — track distinctly from infra
+            # failures so it is neither counted as a failure nor retried.
+            status = "loop_killed"
         else:
             status = "failed"
 
@@ -477,6 +482,7 @@ def write_summary(run_dir: Path, results: list[JobResult]) -> tuple[Path, Path]:
         "generated_at": utc_iso(),
         "total_jobs": len(results),
         "succeeded": sum(1 for r in results if r.status == "succeeded"),
+        "loop_killed": sum(1 for r in results if r.status == "loop_killed"),
         "failed": sum(1 for r in results if r.status == "failed"),
         "timed_out": sum(1 for r in results if r.status == "timed_out"),
         "results": [r.to_dict() for r in results],
@@ -729,8 +735,8 @@ def main(argv: list[str] | None = None) -> int:
                   f"{result.status}  term={result.terminated_by}  "
                   f"steps={result.steps}  dur={result.duration_sec:.0f}s")
 
-            # Retry policy
-            if (result.status != "succeeded"
+            # Retry policy (loop_killed is a valid build — not worth a retry)
+            if (result.status not in ("succeeded", "loop_killed")
                     and job.get("_retries", 0) < args.max_retries
                     and not _shutdown.is_set()):
                 job["_retries"] = job.get("_retries", 0) + 1
@@ -739,7 +745,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"{job['_retries']}/{args.max_retries})")
             else:
                 results.append(result)
-                if args.stop_on_failure and result.status != "succeeded":
+                if args.stop_on_failure and result.status not in ("succeeded", "loop_killed"):
                     print(f"[stop-on-failure] {result.job_id} failed; "
                           f"halting new dispatch")
                     fatal_stop = True
@@ -781,7 +787,9 @@ def main(argv: list[str] | None = None) -> int:
 
     json_path, csv_path = write_summary(run_dir, results)
     succ = sum(1 for r in results if r.status == "succeeded")
-    print(f"\n=== complete: {succ}/{len(results)} succeeded ===")
+    lk = sum(1 for r in results if r.status == "loop_killed")
+    print(f"\n=== complete: {succ}/{len(results)} succeeded "
+          f"(+{lk} loop_killed = valid builds) ===")
     print(f"  run dir:         {run_dir}")
     print(f"  summary.json:    {json_path}")
     print(f"  summary.csv:     {csv_path}")

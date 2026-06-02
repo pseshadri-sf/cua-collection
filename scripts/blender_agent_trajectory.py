@@ -121,7 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Success:       {result.success}")
     if result.error:
         print(f"Error:         {result.error}")
-    return 0 if result.success or result.terminated_by == "agent" else 1
+    # Wave-9: loop-kill leaves a valid build on disk — exit 0 (not a crash).
+    clean = result.success or result.terminated_by in ("agent", "agent_loop_detected")
+    return 0 if clean else 1
 
 
 if __name__ == "__main__":

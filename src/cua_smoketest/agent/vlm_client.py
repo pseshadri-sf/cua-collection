@@ -735,6 +735,19 @@ Example (3 parts of a hinge):
                  origin=[-8, -19, 0],     name="part_02")
   compound(shapes=["part_00", "part_01", "part_02"], name="hinge")
 
+#1 FAILURE MODE ON MULTI-PART GOALS — PARTS STACKED AT THE ORIGIN. If you emit
+raw python_eval, EVERY Part.makeBox/makeCylinder starts at (0,0,0). Without a
+translate per part they all pile up and render as ONE blob → low score → you
+loop. You MUST move each part to its PER-PART origin before adding it:
+  ✗ WRONG (all stacked at origin):
+      p0=Part.makeBox(258,41,18); p1=Part.makeBox(57,201,18); s=Part.makeCompound([p0,p1])
+  ✓ RIGHT (each part translated to its origin):
+      p0=Part.makeBox(258,41,18); p0.translate(App.Vector(-17,0,0))
+      p1=Part.makeBox(57,201,18); p1.translate(App.Vector(-56,-80,0))
+      s=Part.makeCompound([p0,p1])
+If AGENT_STATE reports your parts share ~the same center, you forgot the
+translates — add them; do NOT re-run the stacked code.
+
 PYTHON SYNTAX RULE (CRITICAL — when emitting raw python_eval for FreeCAD):
 For fusing N parts, use a normal for loop, NOT a list comprehension with
 assignment. The following is INVALID Python and will not replay:

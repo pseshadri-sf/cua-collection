@@ -160,7 +160,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Success:       {result.success}")
     if result.error:
         print(f"Error:         {result.error}")
-    return 0 if result.success or result.terminated_by == "agent" else 1
+    # Wave-9: loop-kill fires AFTER a valid build is on disk (the geometry is
+    # real and often correct), so it is not a crash — exit 0. The orchestrator
+    # records the distinct `loop_killed` status from trajectory.json.
+    clean = result.success or result.terminated_by in ("agent", "agent_loop_detected")
+    return 0 if clean else 1
 
 
 if __name__ == "__main__":
