@@ -436,3 +436,125 @@ post-build feedback gives it that information). So S2 is now the
 | 2 | Wave-7.1 — gated S3 | Recover +3 from current −0 on easy assets | ~30 LOC |
 | 3 | A2 repair loop (needs S2) | +2 to +5 on syntax/scale/fillet failures | ~130 LOC |
 | 4 | S5 build123d DSL | Largest single-shot quality lift | ~600 LOC |
+
+## Performance-gap analysis — trajectory dissection (W6 + W7)
+
+Looked at actions, screenshots, and rationales across all 83 W6 + 75 W7
+trajectories. Findings reorder the priority above significantly.
+
+### Headline numbers
+
+| Termination type | N (W6) | Mean score | % uses frame_view/all |
+|---|---|---|---|
+| `agent` (clean) | 13 | **92.0** | **92%** |
+| `agent_loop_detected` | 70 | 61.0 | **6%** |
+
+Then split by app:
+
+| App | term | N | Mean | python_evals/run | frame_*/run |
+|---|---|---|---|---|---|
+| **blender** | **agent (clean)** | **13** | **92.0** | 1.2 | **1.0** |
+| blender | loop_kill | 26 | 75.3 | 3.1 | 0.0 |
+| **freecad** | **agent (clean)** | **0** | — | — | — |
+| freecad | loop_kill | 44 | 52.6 | 3.1 | **0.1** |
+
+### The two cliffs
+
+**Cliff 1: `frame_view` / `frame_all` usage discriminates wins from
+loop-kills almost perfectly.** 92% of clean terminations use it; 6% of
+loop-kills do. The prompt explicitly tells the agent to use it after
+python_eval, but in practice the agent skips it. Why: agent's
+heuristic for "do I need frame?" is "is the geometry invisible in
+CURRENT_STATE?" — but if CURRENT_STATE is the **stale** viewport from
+before the eval, the answer the agent infers is "no, geometry wasn't
+created, retry the eval".
+
+**Cliff 2: Zero FreeCAD trajectories ever emit `terminate`.** Across
+all 44 FC runs in W6, the agent never decided to terminate FC. Every
+single FC run died by loop-kill at 3 identical retries. Compare BL:
+13/39 (33%) emit terminate. FC is structurally broken at the
+termination layer.
+
+### Root cause: the viewport-staleness loop
+
+Dissected `fc__industrial__chairs__adirondack_chair_s` step-by-step:
+
+```
+step 1 (t=22s): python_eval — builds 12-part chair, rationale "I used
+                per-part decomposition strategy, built 12 largest parts"
+step 2 (t=43s): python_eval — IDENTICAL code, rationale "The provided
+                Python script constructs the 12 largest parts"
+step 3 (t=74s): python_eval — IDENTICAL code, rationale "The provided
+                Python script constructs the 12 largest parts"
+                → agent_loop_detected
+```
+
+Frame-by-frame pixel diff: `step_01 vs step_02: IDENTICAL`,
+`step_02 vs step_03: IDENTICAL`. The CURRENT_STATE never changed
+across the 3 retries.
+
+But across all 70 W6 loop-kills, only 21% had identical screens — the
+other 79% showed substantial pixel change (often 77%+, full repaint).
+So the screen DID change between retries in most cases, yet the agent
+still emitted identical code.
+
+The "smoking gun" confirmation: doors-glass W7 trajectory scored 87.2
+(geometry was nearly correct), terminated by loop-kill. The clean
+headless re-render (`agent_render.png`) shows a perfectly-formed door
+part; the trajectory's `step_03_before.png` shows the FC GUI with the
+viewport never having fitted to the built geometry. **The agent
+built the correct part but the viewport never showed it.** The agent's
+screenshot showed the static FC chrome + console pane while the
+geometry sat at world origin, outside the camera frustum.
+
+### Specific deficits to fix (in priority order)
+
+**A. Auto-fit viewport after every FC python_eval** — append
+`;Gui.SendMsgToActiveView('ViewFit')` to the code string before typing
+into the console. ~5 LOC in `agent/action_space.py::_do_python_eval`.
+Closes the viewport-staleness loop without changing the agent's
+behavior. Expected lift: closes most of FC's 44/44 loop-kills, likely
++15 mean on FC alone.
+
+**B. Auto-chain `frame_view` after every `python_eval`** — runtime
+emits the frame as a sequel action automatically. The agent doesn't
+have to remember. ~15 LOC in runner.py + same in blender_runner.py.
+Belt-and-suspenders with (A); a redundant frame_view costs ~600ms.
+
+**C. Crop runtime screenshots to viewport-only region** — strip the FC
+chrome (toolbar, sidebar, console pane) so the agent's CURRENT_STATE
+visually compares well to GOAL_STATE (which is the bare 3D model).
+Currently the FC agent sees 70% chrome / 30% viewport; the BL agent
+sees a much cleaner workspace.
+
+**D. Force terminate after a successful frame in FC** — extend the
+prompt's "REQUIRED STRATEGY (FreeCAD)" to make the third step
+mandatory: after frame_view, if geometry matches goal, emit terminate
+within 1 turn. The BL strategy already has this pattern and it works
+(13 clean BL terminations).
+
+**E. S2 post-build feedback** — still the right intervention for the
+21% truly-identical-screen cases, where the python_eval failed to
+execute at all (focus loss / console glitch). With AGENT_STATE
+showing `last_build: FAILED`, agent knows to try a different focus
+strategy instead of retyping.
+
+### Reordered priority (after trajectory dissection)
+
+| # | Item | Cost | Expected | Why |
+|---|---|---|---|---|
+| **1** | **A** auto-fit FC viewport | ~5 LOC | **+15 on FC** | Closes the dominant FC failure mode |
+| **2** | **B** auto-chain frame_view | ~15 LOC | +3 broadly | Belt-and-suspenders for A |
+| **3** | **D** mandatory FC terminate | ~30 LOC prompt | +5 on FC | Pairs with A — agent needs the "done" signal |
+| 4 | C viewport-only screenshots | ~50 LOC | +5 on FC | Cleaner visual compare |
+| 5 | S2 post-build feedback | ~300 LOC | +5 broadly | Covers focus-loss case |
+| 6 | Wave-7.1 gated S3 (in progress) | done | +1 to +2 | Already in this branch |
+| 7 | A2 repair loop | ~130 LOC | +2 to +5 | Needs S2 |
+| 8 | S5 build123d DSL | ~600 LOC | +5 to +10 | Biggest single shot |
+
+**Note: items A + B + D together address the root cause** found in
+this analysis (FC viewport never reveals built geometry → agent
+loop-kills). The whole text-to-cad ladder (S2-S5) is downstream of
+this. Without A, the agent never gets a chance to use post-build
+feedback because it never reaches a state where the screen reflects
+its work.
