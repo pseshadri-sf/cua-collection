@@ -1099,11 +1099,18 @@ class OpenRouterVLMClient:
                 if grounded_block:
                     user_text += "\n" + grounded_block
 
+        # text-to-cad S3: if a multi-view atlas was pre-rendered for this
+        # asset, swap it in for goal_png so the agent sees iso+front+top+right
+        # (+ optional section_y) in a single 2x2 or 2x3 image. Single-image
+        # API preserved; failures degrade silently to the iso-only goal.
+        effective_goal = self._resolve_goal_png(goal_png)
+        goal_label = "GOAL_STATE (multi-view atlas — iso, front, top, right):" \
+            if effective_goal != goal_png else "GOAL_STATE (target):"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": [
-                {"type": "text", "text": "GOAL_STATE (target):"},
-                self._image_block(goal_png),
+                {"type": "text", "text": goal_label},
+                self._image_block(effective_goal),
                 {"type": "text", "text": "CURRENT_STATE (now):"},
                 self._image_block(current_png),
                 {"type": "text", "text": user_text},
@@ -1251,6 +1258,39 @@ class OpenRouterVLMClient:
     def _backoff(attempt: int) -> None:
         delay = min(2 ** attempt, 30)
         time.sleep(delay)
+
+    def _resolve_goal_png(self, goal_png: Path) -> Path:
+        """text-to-cad S3: return the pre-rendered multi-view atlas if it
+        exists for this asset, else fall back to the iso-only goal_png.
+
+        The atlas is keyed by the *source asset stem* (not the goal screenshot
+        stem). We derive it from the sidecar's `asset` field; missing sidecar
+        or missing cache file = no change.
+        """
+        try:
+            sidecar = goal_png.with_suffix(".meta.json")
+            if not sidecar.exists():
+                sidecar = goal_png.parent / (goal_png.stem + ".meta.json")
+            if not sidecar.exists():
+                return goal_png
+            meta = self._metadata_cache.get(str(goal_png))
+            if meta is None:
+                try:
+                    meta = json.loads(sidecar.read_text())
+                    self._metadata_cache[str(goal_png)] = meta
+                except (OSError, json.JSONDecodeError):
+                    return goal_png
+            if not meta or meta.get("error"):
+                return goal_png
+            asset = meta.get("asset") or ""
+            if not asset:
+                return goal_png
+            atlas = Path("/tmp/multiview_cache") / f"{Path(asset).stem}.png"
+            if atlas.exists() and atlas.stat().st_size > 0:
+                return atlas
+            return goal_png
+        except Exception:
+            return goal_png
 
     def _render_grounded_metadata(self, goal_png: Path) -> str | None:
         """Load sidecar metadata JSON at `<goal_stem>.meta.json` and render

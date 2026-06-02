@@ -221,12 +221,25 @@ lower scope.
 
 **In scope:**
 
-- **S3** multi-view goal packet (iso + 3 ortho + optional section)
-- **S2** post-build geometry feedback (AGENT_STATE injection)
+- **S3** multi-view goal packet (iso + 3 ortho + optional section) —
+  pre-render once per asset, swap in for `goal.png` when present.
 - **B1** progressive reference loading (app-gated prompt blocks) —
-  ship as plumbing inside S3 PR
-- benchmark on W6 hardest 25 (50 was too long for one wave; pick 12 FC
-  + 13 BL spanning W6 score range)
+  free plumbing, ship in same PR.
+- Benchmark on the full W6 50 (since the change is image-only and
+  preserves the API; no need to slice down).
+
+**Pulled back after runtime survey (was originally in scope):**
+
+- **S2** post-build geometry feedback — requires modifying the
+  `_do_python_eval` action executor to append a save-state line, plus
+  an async metadata extractor, plus a vlm_client `AGENT_STATE` renderer.
+  Estimated ~300 LOC across runner.py + blender_runner.py + 2 action
+  spaces + vlm_client.py, with a real risk of breaking the GUI-typing
+  pipeline if the appended save line interacts badly with malformed
+  agent code. **Decision:** ship S3 first, benchmark, then decide if
+  the lift warrants S2's complexity. If S3 alone closes most loop-kills
+  (by giving the agent enough info from the multi-view that they
+  don't need feedback), S2 becomes lower priority.
 
 **Out of scope (captured above for future waves):**
 
@@ -256,17 +269,17 @@ lower scope.
 5. **Stop criterion:** if combined mean drops > 5 below baseline,
    abort and post-mortem; if at/above baseline, write up Wave-7 notes.
 
-## File touch list (S2 + S3)
+## File touch list (S3 + B1)
 
 | File | Change | Est LOC |
 |---|---|---|
-| `scripts/render_goal_multiview.py` (new) | Render iso+front+top+right (+ optional section_y) into 2×2 or 2×3 atlas PNG | ~250 |
-| `scripts/extract_agent_metadata.py` (new) | Shim invoking existing extractor against live FCStd/blend | ~80 |
-| `scripts/build_goal_metadata_sidecars.py` | Call render_goal_multiview after extract; record `multiview_png` field | ~30 |
-| `src/cua_smoketest/agent/runner.py` | After successful python_eval, save FCStd to tmp + run extract_agent_metadata + write `agent_state.json` next to frames | ~80 |
-| `src/cua_smoketest/agent/blender_runner.py` | Same for Blender | ~80 |
-| `src/cua_smoketest/agent/vlm_client.py` | (1) Load multiview_png in preference to goal.png; (2) Load latest agent_state.json and render `_W7_AGENT_STATE_BLOCK`; (3) Conditional FC/BL prompt blocks (B1) | ~120 |
+| `scripts/render_goal_multiview.py` (new) | Render iso+front+top+right (+ optional section_y) into 2×2 or 2×3 atlas PNG. Cache to `/tmp/multiview_cache/<stem>.png`. | ~280 |
+| `src/cua_smoketest/agent/vlm_client.py` | (1) `_resolve_goal_png()` swaps in cache hit when present; (2) Conditional FC/BL prompt blocks (B1) | ~40 |
 | `TODO-text-to-cad.md` (this file) | Created | — |
+
+Total: ~320 LOC, all additive, fail-silent (no cache → falls back to
+single iso). Zero changes to runner/action-executor, so the existing
+W6 pipeline keeps working unmodified.
 
 ## Results — to be filled in after benchmark
 
