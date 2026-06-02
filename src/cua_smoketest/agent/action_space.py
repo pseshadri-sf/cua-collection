@@ -304,15 +304,23 @@ class ActionExecutor:
         return ExecutionResult(True, post_action_sleep=0.5)
 
     def _do_python_eval(self, a: dict) -> ExecutionResult:
-        """Atomic: open console (idempotent) + focus input + type code + Enter.
+        """Atomic: open console (idempotent) + focus input + type code + Enter
+        + auto-fit viewport (Wave-8 item A) + execute frame_view keys (item B).
 
-        Collapses the menu_navigate→click→type→key chain into one action,
-        matching Blender's existing python_eval semantics.
+        Closes the viewport-staleness loop diagnosed in W6+W7 trajectories:
+        0/44 W6 FC runs ever emitted `terminate`. The agent's `frame_view`
+        action does the same fit, but the agent only emits it 6% of the time
+        on loop-killed trajectories (vs 92% on clean wins). With auto-fit +
+        auto-frame here, the agent never has to decide; the viewport will
+        always show what was built.
         """
         code = a.get("code")
         if not isinstance(code, str) or not code.strip():
             return ExecutionResult(False, "'python_eval' requires non-empty string 'code'")
-        # 1. Open the Python console (idempotent — Qt no-ops if already docked).
+        # Wave-8 item A: append ViewFit via the Python console (deterministic,
+        # doesn't depend on viewport focus state).
+        code_with_fit = code.rstrip(" ;") + ";Gui.SendMsgToActiveView('ViewFit')"
+        # 1. Open the Python console (idempotent).
         seq = MENU_PATHS.get(("View", "Panels", "Python console"))
         if seq is not None:
             for kind, x, y, delay in seq:
@@ -321,18 +329,29 @@ class ActionExecutor:
                 elif kind == "hover":
                     self._pg.moveTo(x, y, duration=0.15)
                 time.sleep(delay)
-        # 2. Focus the console's input field.
+        # 2. Focus the console input.
         cx, cy = PYTHON_CONSOLE_INPUT_XY
         self._pg.moveTo(cx, cy, duration=0.15)
         self._pg.click()
         time.sleep(0.3)
-        # 3. Type the code.
-        self._pg.typewrite(code, interval=0.01)
+        # 3. Type the code (with ViewFit appended).
+        self._pg.typewrite(code_with_fit, interval=0.01)
         time.sleep(0.2)
         # 4. Execute.
         self._pg.press("enter")
-        # Give Mesa software-OpenGL ~1.5s to repaint the viewport with new geometry.
-        return ExecutionResult(True, post_action_sleep=1.5)
+        time.sleep(1.5)  # Mesa SW OpenGL needs ~1.5s to repaint
+        # Wave-8 item B: belt-and-suspenders — also tap viewport keys for
+        # iso + fit-all. Cheap (~600ms) and covers the case where ViewFit
+        # didn't take effect (e.g. console swallowed it, or active view is
+        # not the 3D view).
+        vx, vy = VIEWPORT_FOCUS_XY
+        self._pg.moveTo(vx, vy, duration=0.15)
+        self._pg.click()
+        time.sleep(0.3)
+        self._pg.press("0"); time.sleep(0.15)
+        self._pg.press("v"); time.sleep(0.1)
+        self._pg.press("f")
+        return ExecutionResult(True, post_action_sleep=0.6)
 
     def _do_frame_view(self, a: dict) -> ExecutionResult:
         """Atomic: focus viewport + isometric (0) + fit-all (v, f)."""

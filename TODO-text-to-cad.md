@@ -558,3 +558,116 @@ loop-kills). The whole text-to-cad ladder (S2-S5) is downstream of
 this. Without A, the agent never gets a chance to use post-build
 feedback because it never reaches a state where the screen reflects
 its work.
+
+## Results — Wave-7.1 (gated S3) vs W6 baseline
+
+**Run:** `/home/ubuntu/cua_gui_smoketest/runs/wave71_20260602T034553Z/`
+Same 50 W6 jobs, with the conservative gate active (FC: revolution
+markers OR face_count ≥30 OR Cylinder ≥4 → atlas; BL: always iso).
+
+| Metric | W6 baseline | W7 ungated | **W7.1 gated** | W7.1 Δ vs W6 |
+|---|---|---|---|---|
+| Overall (n=47) | 69.3 | 69.9 | **71.4** | **+2.1** |
+| Blender (n=25) | 83.8 | 82.3 | **85.7** | **+1.9** |
+| FreeCAD (n=22) | 52.8 | 55.7 | **55.0** | **+2.2** |
+| Wins/Losses/Ties | — | 14/11/22 | **13/7/27** | — |
+
+W7.1 vs W7 improvement: **+1.5 overall, +3.4 BL** (recovered from
+-1.5 to +1.9), -0.7 FC (slight cost from gate excluding a few FC
+assets that surface_taxonomy doesn't catch as revolution-class).
+
+### Residual W7.1 regressions
+
+Two notable regressions remain even with the gate:
+
+- `bl__10_sphere_ring`: 100.0 → 86.5 (−13.5). Gate SKIPPED multi-view
+  (object_count=8, single type → iso). So this loss is from agent
+  temperature-0.2 variance on a previously-perfect baseline. Implies a
+  noise floor of ~10-15 points on assets that score 100.
+- `fc__industrial__rustic_hinge`: 51.9 → 46.5 (−5.4). Gate FIRED
+  (Toroid in surface taxonomy → atlas). One of the few cases where
+  multi-view actively hurt FC. Worth investigating per-asset later.
+
+### Verdict
+
+**W7.1 is the right shippable version** of the S3 work. Net +2.1
+overall, zero category regressions, FC and BL both positive. The gate
+adds ~25 lines of code and fully recovers the BL noise that ungated S3
+introduced.
+
+But the **trajectory-dissection finding above (FC viewport
+staleness)** is a far larger opportunity than any S3 variant. The
+5-LOC `;Gui.SendMsgToActiveView('ViewFit')` append is the next move.
+
+## Wave-8 item A + B smoke results (partial)
+
+Implemented items A (append `;Gui.SendMsgToActiveView('ViewFit')` to
+every python_eval code string) AND B (after python_eval, click viewport
+and press 0/v/f for iso + fit-all) in `action_space.py::_do_python_eval`.
+
+### Smoke 1 (item A alone) — usb-micro-b, max_steps=5
+
+Result: still loop-killed at 3 identical python_evals.
+
+But the agent's **rationale changed substantively**:
+
+  - Step 2 rationale: *"The previous action already created this box,
+    but the viewport is not framed. The next step is to frame the
+    view to ensure the geometry is visible..."*
+  - Step 3 rationale: *"Proceeding with the same build to ensure the
+    object exists, then frame_view will adjust the camera..."*
+
+The agent now **correctly diagnoses** that the build succeeded and
+that frame_view is the next step. But it emits python_eval anyway.
+That's an action-selection disconnect — the rationale plans the right
+next move, but the chosen action defaults back to python_eval.
+
+### Smoke 2 (items A + B) — multi-part variant of usb-micro-b
+
+Result: still loop-killed at 3 identical python_evals.
+
+Same pattern. The runtime is now correctly framing the geometry but
+the agent's loop-detection (3 identical agent-emitted actions) triggers
+regardless of what the executor does.
+
+### Diagnosis: loop-detection counts agent-emitted actions, not executor results
+
+`runner.py::loop_kill_repeats=3` checks the agent's emitted action
+JSON, not the executor's internal action chain. A+B run more
+operations *inside* the python_eval execution, but the recorded action
+is still `{"type":"python_eval","code":"..."}` — identical to the
+previous step's, so the loop-detector still fires at 3.
+
+### What item A+B actually need to be effective
+
+Three additional changes:
+
+  1. **Bump `loop_kill_repeats` from 3 → 5** for FC. Gives the agent
+     2 more retries before kill, during which the framing has had time
+     to take effect across multiple screenshots.
+
+  2. **Synthetic auto-step injection**: after a successful python_eval,
+     the runner records a synthetic `{"type":"frame_view","_auto":true}`
+     step. The agent's history then shows
+     `[py, frame, py, frame, py, ...]` instead of `[py, py, py]`, so
+     loop-detect doesn't fire AND the agent sees a "frame happened"
+     signal.
+
+  3. **Prompt-level forcing**: when the recent action history shows
+     2+ python_evals with no terminate, inject into the per-turn user
+     message: *"You have emitted python_eval twice. The geometry is
+     already built and framed. Your next action MUST be either
+     `frame_view` or `terminate` — do NOT emit another python_eval."*
+
+Cost of full chain: items A+B (~30 LOC, shipped now) + items 1-3 above
+(~80 LOC). Total ~110 LOC. Expected to take FC's 0/44 clean-termination
+rate to something like 30-50% (matching BL's 33%).
+
+### Decision: ship A+B but do not benchmark until items 1-3 land
+
+A+B in isolation made the agent's *rationale* better but not its
+*action choice*, so a benchmark of A+B alone would likely show no
+meaningful change in scores. Hold off on benchmarking until the
+loop-detection bypass + synthetic step + prompt forcing are added.
+Scope these as **Wave-8** in a fresh branch; the text-to-cad branch
+stays focused on the S3 + scope/analysis deliverables.
