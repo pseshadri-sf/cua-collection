@@ -338,20 +338,15 @@ class BlenderAgentTrajectoryRunner:
                     usage=resp.usage,
                     exec_error=exec_result.error,
                 ))
-                # Wave-8: synthetic frame_all injection after successful
-                # python_eval (parallel to FC runner change). BL doesn't have
-                # a viewport-staleness bug to the same degree, but the synthetic
-                # step still breaks the loop-detector when the agent retries
-                # identical code.
-                if (isinstance(action, dict)
-                        and action.get("type") == "python_eval"
-                        and exec_result.ok):
-                    steps.append(TrajectoryStep(
-                        step_idx=step_idx,
-                        action_time=after_t,
-                        action={"type": "frame_all", "_auto": True},
-                        rationale="(auto-injected after python_eval)",
-                    ))
+                # Wave-8.1 REVERT: the synthetic frame_all injection (parallel
+                # to the FC runner change) was removed for Blender. The full
+                # Wave-8 benchmark showed it REGRESSED BL: interleaving
+                # py / frame_all / py / frame_all defeats the identical-in-a-row
+                # loop-kill check below, so BL agents kept overwriting a correct
+                # first build with worse retries instead of being force-terminated.
+                # FC benefits from the injection (viewport-staleness loop); BL
+                # does not, so the two runners now differ here. The loop_kill
+                # bump (3->5) and the anti-loop directive are retained for BL.
 
                 # Loop-kill: same payload N times in a row → force-terminate.
                 if self.loop_kill_repeats >= 2:
