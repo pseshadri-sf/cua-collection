@@ -1260,14 +1260,35 @@ class OpenRouterVLMClient:
         time.sleep(delay)
 
     def _resolve_goal_png(self, goal_png: Path) -> Path:
-        """text-to-cad S3: return the pre-rendered multi-view atlas if it
-        exists for this asset, else fall back to the iso-only goal_png.
+        """text-to-cad S3 (Wave-7.1 gated): return the pre-rendered multi-view
+        atlas IFF the goal is in a class where multi-view helps; else fall
+        back to the iso-only goal_png.
 
-        The atlas is keyed by the *source asset stem* (not the goal screenshot
-        stem). We derive it from the sidecar's `asset` field; missing sidecar
-        or missing cache file = no change.
+        Wave-7 ungated benchmark on the full 47-job W6 set showed:
+          - FC: +2.9 mean (multi-view helps silhouette-ambiguous shapes)
+          - BL: -1.5 mean (multi-view HURTS easy primitives that were 100s)
+
+        Gate criteria (W7.1 — conservative after smoke-testing showed the
+        BL signal is too muddled to gate cleanly):
+
+          FC: surface_taxonomy contains BSplineSurface, SurfaceOfRevolution,
+              Cone, or Toroid; OR curve_taxonomy contains BSplineCurve /
+              Ellipse. These are the revolution/curved-profile classes where
+              iso silhouette is ambiguous (matches the W7 FC wins).
+
+          BL: always fall back to iso. The W7 BL regressions (dense_scatter,
+              nested_spheres, sphere_ring, torus_tower, organic_blob — all
+              with baseline 89-100) showed multi-view can hurt easy BL
+              assets, and we couldn't find a clean discriminator from
+              sidecar fields. Accepting that we lose some BL wins
+              (lattice_cubes +17.9, landscape +17.0) to protect the
+              5+ regressions worth -88 cumulative.
+
+        Set CUA_MV_GATE=off in env to bypass the gate (revert to ungated
+        Wave-7 behavior — for ablation testing).
         """
         try:
+            import os
             sidecar = goal_png.with_suffix(".meta.json")
             if not sidecar.exists():
                 sidecar = goal_png.parent / (goal_png.stem + ".meta.json")
@@ -1286,8 +1307,42 @@ class OpenRouterVLMClient:
             if not asset:
                 return goal_png
             atlas = Path("/tmp/multiview_cache") / f"{Path(asset).stem}.png"
-            if atlas.exists() and atlas.stat().st_size > 0:
+            if not (atlas.exists() and atlas.stat().st_size > 0):
+                return goal_png
+
+            # Wave-7.1 gate. CUA_MV_GATE=off → behave like ungated W7.
+            if os.environ.get("CUA_MV_GATE", "on").lower() == "off":
                 return atlas
+
+            app = meta.get("app")
+            if app == "freecad":
+                surf = (meta.get("surface_taxonomy") or {}).get("counts") or {}
+                curv = meta.get("curve_taxonomy") or {}
+                revolution_kinds = {"BSplineSurface", "SurfaceOfRevolution",
+                                    "Cone", "Toroid"}
+                curved_edge_kinds = {"BSplineCurve", "Ellipse"}
+                # Trigger 1: revolution/curved-profile class
+                if any(k in surf for k in revolution_kinds) or \
+                   any(k in curv for k in curved_edge_kinds):
+                    return atlas
+                # Trigger 2: complex multi-feature compound
+                # (e.g. HVAC pipework assemblies — 68+ planes + 8 cylinders
+                # — where iso view compresses the layout but top/front
+                # disambiguate it). face_count = sum of surface counts.
+                if sum(surf.values()) >= 30:
+                    return atlas
+                # Trigger 3: many cylinders (multi-cylindrical feature
+                # like connectors, screws, pin-grid)
+                if int(surf.get("Cylinder", 0)) >= 4:
+                    return atlas
+                return goal_png  # FC simple primitives (box, single cyl) keep iso
+
+            if app == "blender":
+                # Conservative: always fall back to iso. See docstring for
+                # the rationale and the BL wins we accept losing.
+                return goal_png
+
+            # Unknown app → conservative: keep iso
             return goal_png
         except Exception:
             return goal_png
