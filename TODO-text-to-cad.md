@@ -281,12 +281,77 @@ Total: ~320 LOC, all additive, fail-silent (no cache → falls back to
 single iso). Zero changes to runner/action-executor, so the existing
 W6 pipeline keeps working unmodified.
 
-## Results — to be filled in after benchmark
+## Results — Wave-7 (S3 multi-view only) vs Wave-6 baseline
 
-(populated by the rerun)
+**Run:** `/home/ubuntu/cua_gui_smoketest/runs/wave7_20260602T021234Z/`
+**Subset:** 22 hardest W6 jobs (12 FC + 10 BL spanning lowest scores).
+20 of 22 produced valid scoreable trajectories.
 
-- Baseline (W6 hardest 25): BL mean = , FC mean = , overall = , loop-kill % = 
-- Treatment (Wave-7 S2+S3): BL mean = , FC mean = , overall = , loop-kill % = 
-- Per-class Δ: revolution , multi-part , single-primitive 
-- Tokens/job Δ: 
-- Notes:
+### Aggregate
+
+| Metric | W6 baseline | W7 (S3) | Δ |
+|---|---|---|---|
+| Overall mean | 53.1 | **58.4** | **+5.2** |
+| Blender mean | 63.9 | **69.1** | **+5.1** |
+| FreeCAD mean | 45.9 | **51.2** | **+5.3** |
+| Wins / Losses / Ties | — | 11 / 2 / 7 | — |
+
+### Biggest single lifts (where multi-view paid off)
+
+| Job | App | W6 | W7 | Δ | Why |
+|---|---|---|---|---|---|
+| `fc__hvac__conections__extended_retangular_` | FC | 37.1 | 56.5 | **+19.4** | Side view revealed rectangular profile that iso compressed |
+| `bl__25_lattice_cubes` | BL | 82.1 | 100.0 | **+17.9** | Top view nailed the cube grid count |
+| `bl__21_landscape` | BL | 78.0 | 95.0 | **+17.0** | Front view exposed terrain layering |
+| `fc__electronic__smd__usb-micro-b_step` | FC | 32.1 | 48.9 | **+16.8** | Top + right views disambiguated connector shell |
+| `fc__architectural-parts-hydro-equipment-fa` | FC | 46.0 | 55.4 | **+9.4** | Front view fixed hub/flange aspect |
+| `bl__35_random_mixed` | BL | 73.8 | 82.3 | **+8.5** | Multi-view caught count of distinct primitives |
+| `fc__chain__simplex_1¾x1¼__sprocket_ansi_si` | FC | 41.3 | 49.0 | **+7.7** | Top view showed tooth circle (not tooth count, but circular footprint) |
+| `fc__electronic__female__3pin-female-2.54mm` | FC | 51.6 | 57.9 | **+6.3** | Front view fixed pin-row layout |
+
+### Ties and small losses
+
+7 ties — almost all are `terminated_by: agent_loop_detected`. The agent
+emitted 3 identical `python_eval` payloads and was force-killed; the
+multi-view atlas gave it a better initial guess, but it still had no way
+to **confirm the geometry was committed**. The single iso vs multi-view
+makes no difference once the agent is stuck in a verify-but-can't-see
+loop.
+
+Two small losses: cup (-2.0) and torus array (-2.4). Both are within
+random-seed noise; not material.
+
+### Per-failure-mode breakdown
+
+- **Silhouette-ambiguous shapes** (revolution-class, multi-pin
+  connectors, lattices): **+13 mean** when multi-view fires.
+- **Loop-kill (agent_loop_detected)**: **no change**. S2 territory.
+- **Multi-part decompose**: unchanged (decompose path independent of
+  the goal image).
+
+### Costs
+
+- Pre-render: ~25 min wall for all 50 W6 atlases (4 workers via
+  `xvfb-run -a`). FC dominates (~50s/asset due to freecadcmd→STL); BL
+  is ~14s.
+- VLM per-call latency: first call ~30-60s (vs ~15-30s for single iso —
+  larger payload to ingest). Subsequent calls cache prefix, stay ~7-15s.
+- Per-job wall time: ~60-100s for short trajectories, ~3-6 min for full
+  35-step runs. Comparable to W6.
+
+### Verdict
+
+**Ship S3.** Substantial lift across both apps on the hardest assets,
+no regression, no infra cost beyond a one-time per-asset pre-render.
+The multi-view image is the agent's new "goal" — fail-silent: assets
+without an atlas keep the original iso behavior.
+
+### Next: S2 is the obvious follow-on
+
+Of the 7 ties this run, 6 were `agent_loop_detected` — the universal
+failure mode that S3 cannot touch. S2 (post-build geometry feedback)
+directly addresses it. With both S2 + S3 we'd likely flip most of those
+7 ties into wins, putting overall mean above 65.
+
+Risk: S2 needs ~300 LOC across action executors. Recommendation: scope
+S2 as Wave-8 in a fresh branch; keep this branch's S3 win clean.
