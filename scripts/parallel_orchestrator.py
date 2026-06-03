@@ -36,7 +36,9 @@ from typing import Any
 
 # --- defaults ------------------------------------------------------------
 
-PROJECT_ROOT = Path("/home/ubuntu/dev/init_envs")
+# Derive from this file's location so the orchestrator runs the code of
+# whatever checkout/worktree it lives in (frontier-onepass uses a worktree).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 UV_BIN = "/home/ubuntu/.local/bin/uv"
 DEFAULT_MODEL = "qwen/qwen3-vl-30b-a3b-instruct"  # 7 providers vs gemma-4's 1
 DEFAULT_EXTRA_ARGS = (
