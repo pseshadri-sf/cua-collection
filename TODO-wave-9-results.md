@@ -53,6 +53,33 @@ that FreeCAD console autocomplete/timing corrupts the `exec(...)` tail, so it
 never runs. The build half succeeds (frame_view injected), the probe half
 silently fails. So S2 was only ~42% deployed → the experiment is under-powered.
 
+## Wave-9.1 update — S2 fixed + best-of-3 (the definitive read)
+
+S2 probe fix (separate short-path console submission) verified: `agent_state.json`
+now in **96/96 FC trials** (was 14/33). Re-benchmarked best-of-3 (150 trials) on
+the same 50 assets. All 150 produced valid builds (110 succeeded + 40 loop_killed).
+
+| | best-of-3 | mean-of-3 |
+|---|---|---|
+| FreeCAD | 57.9 | 57.8 |
+| Blender | 83.5 | 81.4 |
+| **Overall** | **67.1** | **66.3** |
+
+Per-job noise floor (stdev across 3 trials): **mean 1.0**, max 16.8 — most jobs
+are reproducible; only a few swing.
+
+**Verdict: even with S2 100% deployed and properly multi-sampled, S2/A2 does NOT
+move match_score.** mean-of-3 = 66.3, identical to wave-9 (66.3) and wave-9d
+(66.7). best-of-3 = 67.1 (+0.8 ceiling from 3 draws). The behavior changed
+(translate 3→12, code-diversity up) but the 30B model's *planning ceiling* is
+the wall: better post-build feedback doesn't grant better decomposition.
+
+**This is the empirical case for the frontier-planner approach** (`frontier-onepass`
+branch): the bottleneck is planning capability, not feedback — so put planning in
+a frontier model and hand the 30B an authoritative plan. Keep the loop_killed
+reporting fix (clear win); treat S2 as plumbing the planner will leverage (its
+AGENT_STATE readback is the plan-vs-built reconciliation signal).
+
 ## Next (Wave-9.1)
 
 1. **Fix S2 reliability** — execute the probe as a SEPARATE console submission
