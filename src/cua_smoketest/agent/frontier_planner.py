@@ -88,6 +88,56 @@ console as-is. Prefer a list+loop joined on one line only via
 its own statement. Double-check every part has a translate.
 """
 
+# Blender variant: same schema, but full_code is one-line bpy.
+_PLANNER_SYSTEM_BL = """\
+You are an expert CAD/3D reconstruction PLANNER for the Blender Python API (bpy).
+You are given a GOAL image (rendered views of a target mesh/scene) plus
+pre-computed GOAL_METADATA. Produce a complete build PLAN that a less-capable
+executor agent will follow to recreate the asset in Blender.
+
+CONVENTIONS (follow exactly):
+- Coordinates/sizes are in Blender units; TRUST GOAL_METADATA bbox/part numbers
+  over your own estimates. Note any disagreement in `brief`.
+- ALWAYS clear the scene first:
+  bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete()
+- Parameters-first: put key dimensions/counts in `parameters`.
+- One distinct visible object = one mesh. PLACE EACH at its own `location=(x,y,z)`
+  — never leave everything at the origin (they would overlap into one blob).
+- Use bpy.ops.mesh.primitive_*_add: cube_add(size=, location=), uv_sphere_add(
+  radius=, location=), cylinder_add(radius=, depth=, location=), cone_add,
+  torus_add(major_radius=, minor_radius=, location=), monkey_add. For non-uniform
+  boxes set the active object's scale after a cube_add. For arrays, a one-line
+  list comprehension over locations is fine.
+- For repeated/array layouts use a single-line comprehension:
+  [bpy.ops.mesh.primitive_cube_add(size=s, location=(x,y,z)) for x in [...] for y in [...]]
+- Name the top-level object with GOAL_NAME when provided.
+
+OUTPUT: a single JSON object, no prose outside it, matching this schema:
+{
+  "brief": "<2-4 sentence brief: what it is, overall size, object breakdown,
+            origin/orientation, key assumptions>",
+  "shape_class": "single_solid" | "assembly" | "array" | "organic",
+  "parameters": { "<name>": <number>, ... },
+  "conventions": { "units": "blender", "origin": "<e.g. world-center>", "up": "+Z" },
+  "steps": [
+    { "i": 1, "name": "<obj>", "op": "primitive_cube_add"|"primitive_uv_sphere_add"|
+        "primitive_cylinder_add"|"primitive_cone_add"|"primitive_torus_add"|
+        "primitive_monkey_add"|"array"|"modifier",
+      "dims": [<numbers>], "origin": [x,y,z], "why": "<short>" },
+    ...
+  ],
+  "full_code": "<ONE-LINE, semicolon-joined, console-ready bpy that clears the
+      scene then reconstructs the ENTIRE asset: import bpy; bpy.ops.object.
+      select_all(action='SELECT'); bpy.ops.object.delete(); <add+place every
+      object> — NO newlines, NO multi-line def/for blocks (list comprehensions OK)>",
+  "validation_targets": { "object_count": <int>, "bbox": [x,y,z] },
+  "fallback": "<simplest acceptable single-primitive approximation + est. score>"
+}
+
+The `full_code` MUST be valid one-line bpy that runs in Blender's console as-is.
+Double-check every object has its own location.
+"""
+
 
 def load_goal_metadata(goal_png: Path) -> dict[str, Any] | None:
     """Read the `<goal>.meta.json` sidecar next to the goal image."""
@@ -122,6 +172,7 @@ def _metadata_text(meta: dict[str, Any]) -> str:
 
 class FrontierPlanner:
     def __init__(self, api_key: str, model: str = DEFAULT_PLANNER_MODEL,
+                 app: str = "freecad",
                  image_max_dim: int = 1024, timeout: float = 240.0,
                  reasoning_effort: str = "low", max_tokens: int = 24000,
                  referer: str = "https://cua-smoketest.local",
@@ -130,6 +181,7 @@ class FrontierPlanner:
             raise ValueError("FrontierPlanner needs an OpenRouter api_key")
         self.api_key = api_key
         self.model = model
+        self.app = app
         self.image_max_dim = image_max_dim
         self.timeout = timeout
         # Gemini 3.x Pro is a heavy reasoner: at high effort it burned ~14k
@@ -157,10 +209,11 @@ class FrontierPlanner:
                                 "text": f"GOAL_NAME = '{goal_name}' (name the top object this)"})
         user_blocks.append({"type": "text",
                             "text": "Output the BUILD_PLAN JSON now."})
+        system = _PLANNER_SYSTEM_BL if self.app == "blender" else _PLANNER_SYSTEM
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": _PLANNER_SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user_blocks},
             ],
             "temperature": 0.0,
@@ -247,7 +300,8 @@ def _extract_json(text: str) -> dict[str, Any]:
 def _validate_plan(plan: Any) -> bool:
     if not isinstance(plan, dict):
         return False
-    if not isinstance(plan.get("full_code"), str) or "doc" not in plan["full_code"]:
+    fc = plan.get("full_code")
+    if not isinstance(fc, str) or len(fc) < 20 or not ("doc" in fc or "bpy" in fc):
         return False
     if not isinstance(plan.get("steps"), list) or not plan["steps"]:
         return False

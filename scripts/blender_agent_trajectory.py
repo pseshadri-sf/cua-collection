@@ -76,15 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     # shared jobs-files don't crash Blender jobs. The frontier planner is not yet
     # integrated into the Blender runner, so these are currently no-ops for BL.
     parser.add_argument("--planner-model", default=None,
-                        help="(accepted, not yet wired for Blender)")
+                        help="frontier-onepass: OpenRouter model id for the "
+                             "one-pass frontier planner (bpy plan for Blender).")
     parser.add_argument("--plan-format", choices=("python_eval", "build_star"),
                         default="python_eval",
-                        help="(accepted, not yet wired for Blender)")
+                        help="How the BUILD_PLAN is surfaced downstream.")
     args = parser.parse_args(argv)
-    if args.planner_model:
-        print("[planner] note: Blender planner not yet integrated; running "
-              "Blender baseline (FreeCAD-only frontier planner for now).",
-              flush=True)
 
     if args.env_file:
         for k, v in _load_env_file(Path(args.env_file)).items():
@@ -121,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         escalate_at_step=args.escalate_at_step,
         escalate_to_effort=args.escalate_to_effort,
+        planner_model=args.planner_model,
+        plan_format=args.plan_format,
     )
     result = runner.run()
 

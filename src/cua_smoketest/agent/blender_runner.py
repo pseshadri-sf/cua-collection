@@ -149,7 +149,9 @@ class BlenderAgentTrajectoryRunner:
                  # still help on edge cases.
                  loop_kill_repeats: int = 5,
                  escalate_at_step: int = 0,
-                 escalate_to_effort: str = "high"):
+                 escalate_to_effort: str = "high",
+                 planner_model: str | None = None,
+                 plan_format: str = "python_eval"):
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.vlm = vlm
@@ -166,6 +168,8 @@ class BlenderAgentTrajectoryRunner:
         # taken `escalate_at_step` steps without self-terminating. 0 = off.
         self.escalate_at_step = escalate_at_step
         self.escalate_to_effort = escalate_to_effort
+        self.planner_model = planner_model
+        self.plan_format = plan_format
 
     def run(self) -> TrajectoryResult:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -208,6 +212,24 @@ class BlenderAgentTrajectoryRunner:
         terminated_by = "max_steps"
         error: str | None = None
         system_prompt = SYSTEM_PROMPT_TMPL.format(action_space=ACTION_SPACE_SPEC)
+
+        # frontier-onepass Variant A (Blender): one frontier call up front →
+        # a bpy BUILD_PLAN injected as guidance every turn. Best-effort.
+        plan_block = ""
+        if self.planner_model:
+            try:
+                from .frontier_planner import FrontierPlanner, render_plan_block
+                from .vlm_client import _extract_goal_name
+                planner = FrontierPlanner(api_key=self.vlm.api_key,
+                                          model=self.planner_model, app="blender",
+                                          image_max_dim=self.vlm.image_max_dim)
+                plan = planner.plan(self.goal_png, goal_name=_extract_goal_name(self.goal_png))
+                if plan:
+                    (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))
+                    plan_block = render_plan_block(plan, self.plan_format)
+                    print(f"[planner] BL plan ready: {len(plan.get('steps', []))} steps", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[planner] BL skipped ({type(exc).__name__}: {exc})", flush=True)
 
         try:
             self._reset_blender_state()
@@ -277,6 +299,7 @@ class BlenderAgentTrajectoryRunner:
                         current_png=current_png,
                         step_idx=step_idx,
                         max_history_hint=hist_hint,
+                        plan_block=plan_block,
                     )
                 except ValueError as exc:
                     steps.append(TrajectoryStep(
