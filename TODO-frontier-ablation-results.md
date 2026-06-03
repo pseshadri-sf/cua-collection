@@ -54,3 +54,23 @@ WITHOUT bright 86.9 -> WITH bright 86.4 (Δ -0.5, within noise). Forcing a
 visible viewport does NOT lift BL scores in the planner regime — the agent
 one-shots the plan and terminates, so it doesn't rely on seeing its build.
 Kept as a debug aid (--bright-viewport), default off.
+
+## Wave-12 reasoning ablation (3-point, multi-view goals)
+Clean isolation of goal-format and planner-reasoning effects:
+
+| arm | goals | planner reason | FC | BL | overall | cost/asset | time/asset |
+|---|---|---|---|---|---|---|---|
+| wave-11 | single-iso | low | 60.6 | 86.9 | 69.8 | $0.0252 | 78s |
+| low-mv | multi-view | low | 59.4 | 89.7 | **70.0** | $0.0228 | 65s |
+| med-mv | multi-view | **medium** | 61.8 | 83.0 | 69.2 | $0.0389 | 81s |
+
+Findings:
+- **Multi-view goals (wave-11 -> low-mv): neutral on score (+0.2 overall), but
+  CHEAPER + FASTER** ($0.0252->$0.0228, 78s->65s). BL +2.8, FC -1.2. Keep them
+  (free/positive + fixes blank goals).
+- **Medium reasoning (low-mv -> med-mv): NOT worth it.** Overall 70.0 -> 69.2
+  (flat-to-down) while planner cost rises ~85% ($0.019->$0.035/asset, total
+  $2.28->$3.89) and it's slower (65s->81s). It helps FC (+2.4) but HURTS BL
+  (-6.7, partly variance but consistent net-negative).
+- **Recommendation: stay on LOW planner reasoning + multi-view goals.** Low is
+  the sweet spot — cheapest, fastest, best overall.
