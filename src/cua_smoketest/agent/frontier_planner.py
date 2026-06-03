@@ -241,6 +241,10 @@ class FrontierPlanner:
         if not _validate_plan(plan):
             print(f"[planner] invalid plan schema: {str(plan)[:200]}", flush=True)
             return None
+        # Stash planner usage/cost so the runner persists it in build_plan.json
+        # (the ablation sums planner + SLM cost per asset).
+        plan["_planner_model"] = self.model
+        plan["_planner_usage"] = body.get("usage")
         return plan
 
     # --- internals ----------------------------------------------------------
