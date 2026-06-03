@@ -234,6 +234,7 @@ class FrontierPlanner:
             body = self._post_with_retry(headers, payload)
             choice = body["choices"][0]["message"]
             content = choice.get("content") or ""
+            reasoning = choice.get("reasoning")  # frontier model's thinking trace
             plan = _extract_json(content)
         except Exception as exc:  # noqa: BLE001 — planning is best-effort
             print(f"[planner] FAILED: {type(exc).__name__}: {exc}", flush=True)
@@ -241,10 +242,12 @@ class FrontierPlanner:
         if not _validate_plan(plan):
             print(f"[planner] invalid plan schema: {str(plan)[:200]}", flush=True)
             return None
-        # Stash planner usage/cost so the runner persists it in build_plan.json
-        # (the ablation sums planner + SLM cost per asset).
+        # Stash planner provenance so the runner persists it in build_plan.json:
+        # usage/cost (for the cost ablation) + the reasoning trace (for audit /
+        # understanding WHY the planner decomposed the asset the way it did).
         plan["_planner_model"] = self.model
         plan["_planner_usage"] = body.get("usage")
+        plan["_planner_reasoning"] = reasoning
         return plan
 
     # --- internals ----------------------------------------------------------

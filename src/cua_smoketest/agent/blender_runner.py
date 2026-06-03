@@ -24,6 +24,33 @@ from .screen_recorder import ScreenRecorder
 from .vlm_client import OpenRouterVLMClient
 
 
+# Run at Blender launch (--python). Forces every 3D viewport to flat, bright
+# SOLID shading on a dark background so geometry is clearly visible under Mesa
+# software GL (default studio+grey shading renders near-black). Wrapped in a
+# timer so it runs after the UI is fully built.
+_BRIGHT_VIEWPORT_SRC = '''\
+import bpy
+def _apply():
+    for scr in bpy.data.screens:
+        for area in scr.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for sp in area.spaces:
+                if sp.type != "VIEW_3D":
+                    continue
+                sh = sp.shading
+                sh.type = "SOLID"
+                sh.light = "FLAT"
+                sh.color_type = "SINGLE"
+                sh.single_color = (0.85, 0.88, 1.0)
+                sh.background_type = "VIEWPORT"
+                sh.background_color = (0.08, 0.08, 0.10)
+    return None
+bpy.app.timers.register(_apply, first_interval=0.5)
+_apply()
+'''
+
+
 SYSTEM_PROMPT_TMPL = """You are an autonomous GUI agent controlling Blender 3.0 \
 on a Linux desktop (1920x1080) via pyautogui.
 
@@ -151,7 +178,9 @@ class BlenderAgentTrajectoryRunner:
                  escalate_at_step: int = 0,
                  escalate_to_effort: str = "high",
                  planner_model: str | None = None,
-                 plan_format: str = "python_eval"):
+                 plan_format: str = "python_eval",
+                 bright_viewport: bool = False):
+        self.bright_viewport = bright_viewport
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.vlm = vlm
@@ -231,9 +260,19 @@ class BlenderAgentTrajectoryRunner:
             except Exception as exc:  # noqa: BLE001
                 print(f"[planner] BL skipped ({type(exc).__name__}: {exc})", flush=True)
 
+        # Optional: force a flat, bright SOLID viewport so the agent (which sees
+        # the live viewport as CURRENT_STATE) and our screenshots can actually
+        # see the built geometry. Default Blender solid+studio shading renders
+        # near-black under Mesa software GL. Set once at launch; persists across
+        # the agent's select_all/delete rebuilds (it's a space property).
+        startup_py = None
+        if self.bright_viewport:
+            startup_py = self.output_dir / "_bright_viewport.py"
+            startup_py.write_text(_BRIGHT_VIEWPORT_SRC)
+
         try:
             self._reset_blender_state()
-            launch = blender.launch(asset=None)
+            launch = blender.launch(asset=None, startup_py=startup_py)
             time.sleep(self.blender_post_launch_delay)
             # Dismiss the launch splash that Blender always shows.
             blender.dismiss_splash()

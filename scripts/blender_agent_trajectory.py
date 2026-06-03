@@ -72,15 +72,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--decompose", action="store_true",
                         help="Wave-4.1: append per-part bbox+origin table to "
                              "GOAL_METADATA when the sidecar has a `parts` list.")
-    # frontier-onepass: accepted for CLI parity with the FreeCAD entrypoint so
-    # shared jobs-files don't crash Blender jobs. The frontier planner is not yet
-    # integrated into the Blender runner, so these are currently no-ops for BL.
+    # frontier-onepass: the planner is wired into the Blender runner (app-aware
+    # bpy plans), so these are active for BL.
     parser.add_argument("--planner-model", default=None,
                         help="frontier-onepass: OpenRouter model id for the "
                              "one-pass frontier planner (bpy plan for Blender).")
     parser.add_argument("--plan-format", choices=("python_eval", "build_star"),
                         default="python_eval",
                         help="How the BUILD_PLAN is surfaced downstream.")
+    parser.add_argument("--bright-viewport", action="store_true",
+                        help="Force a flat/bright SOLID viewport so the agent + screenshots\n                             can see built geometry (default renders near-black under SW GL).")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -120,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         escalate_to_effort=args.escalate_to_effort,
         planner_model=args.planner_model,
         plan_format=args.plan_format,
+        bright_viewport=args.bright_viewport,
     )
     result = runner.run()
 

@@ -36,7 +36,8 @@ class BlenderAutomation:
 
     # --- lifecycle ---------------------------------------------------------
 
-    def launch(self, asset: Path | None = None) -> BlenderLaunch:
+    def launch(self, asset: Path | None = None,
+               startup_py: "Path | None" = None) -> BlenderLaunch:
         if not self.blender_binary:
             raise RuntimeError("Blender binary not found")
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -44,6 +45,10 @@ class BlenderAutomation:
         cmd: list[str] = [self.blender_binary, "--factory-startup"]
         if asset is not None:
             cmd.append(str(asset))
+        # Optional startup script (e.g. force a flat/bright viewport so the
+        # agent — and our screenshots — can actually see the built geometry).
+        if startup_py is not None:
+            cmd += ["--python", str(startup_py)]
         env = os.environ.copy()
         env["DISPLAY"] = self.display
         # Force Mesa software rendering (no GPU on this box).
