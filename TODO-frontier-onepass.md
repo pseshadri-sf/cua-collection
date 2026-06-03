@@ -311,3 +311,10 @@ Still open (sensible defaults in parens — will proceed on these unless told ot
    control group) or cap to multi-part assets?
 3. If the goal image contradicts GOAL_METADATA bbox, may the planner override it?
    (Default: trust metadata; note the disagreement in the brief.)
+
+## DEFERRED — best-of-3 (do NOT run yet, per user)
+
+Best-of-3 on the FC+BL set with the FIXED planner + a per-asset plan cache
+(plans are deterministic at temp 0 → plan once per asset, reuse across 3 trials
+so planner cost stays ~1× not 3×). Compare vs wave-9.1 best-of-3 (mean-of-3
+66.3 / best-of-3 67.1). Run AFTER the wave-11 cost/score/time ablation.
