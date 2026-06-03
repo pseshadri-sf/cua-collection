@@ -109,6 +109,17 @@ def main(argv: list[str] | None = None) -> int:
                              "append a per-part bbox+origin table to "
                              "GOAL_METADATA so the agent can emit one build_* "
                              "per part instead of one big primitive.")
+    parser.add_argument("--planner-model", default=None,
+                        help="frontier-onepass: OpenRouter model id for the "
+                             "one-pass frontier planner (e.g. "
+                             "google/gemini-3-pro-preview). When set, the "
+                             "frontier model plans the whole build at step 0 and "
+                             "the plan guides the executor (Variant A).")
+    parser.add_argument("--plan-format", choices=("python_eval", "build_star"),
+                        default="python_eval",
+                        help="How the BUILD_PLAN is surfaced downstream: a ready "
+                             "one-line python_eval reconstruction (default) or "
+                             "per-step build_* primitive ops.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -148,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         escalate_at_step=args.escalate_at_step,
         escalate_to_effort=args.escalate_to_effort,
+        planner_model=args.planner_model,
+        plan_format=args.plan_format,
     )
     result = runner.run()
 

@@ -31,8 +31,9 @@ from ..display import DisplayManager, DisplaySession
 from ..environment import EnvironmentInspector
 from ..screenshots import ScreenshotCapture
 from .action_space import ACTION_SPACE_SPEC, ActionExecutor
+from .frontier_planner import FrontierPlanner, render_plan_block
 from .screen_recorder import ScreenRecorder
-from .vlm_client import OpenRouterVLMClient, VLMResponse
+from .vlm_client import OpenRouterVLMClient, VLMResponse, _extract_goal_name
 
 
 SYSTEM_PROMPT_TMPL = """You are an autonomous GUI agent controlling FreeCAD 0.19 \
@@ -228,7 +229,13 @@ class AgentTrajectoryRunner:
                  # for the agent to recognize.
                  loop_kill_repeats: int = 5,
                  escalate_at_step: int = 0,
-                 escalate_to_effort: str = "high"):
+                 escalate_to_effort: str = "high",
+                 # frontier-onepass Variant A: when set, a frontier model plans
+                 # the whole build once at step 0 and the plan is injected as
+                 # guidance every turn. plan_format picks the downstream
+                 # rendering ("python_eval" default, or "build_star").
+                 planner_model: str | None = None,
+                 plan_format: str = "python_eval"):
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.vlm = vlm
@@ -248,6 +255,8 @@ class AgentTrajectoryRunner:
         # self-terminating, bump the VLM's reasoning_effort. 0 = disabled.
         self.escalate_at_step = escalate_at_step
         self.escalate_to_effort = escalate_to_effort
+        self.planner_model = planner_model
+        self.plan_format = plan_format
 
     def run(self) -> TrajectoryResult:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -308,6 +317,25 @@ class AgentTrajectoryRunner:
         # readout, injected at the top of the next turn's history hint.
         agent_state_hint = ""
         system_prompt = SYSTEM_PROMPT_TMPL.format(action_space=ACTION_SPACE_SPEC)
+
+        # frontier-onepass Variant A: one frontier call up front → a BUILD_PLAN
+        # block injected as guidance every turn. Best-effort: on any failure the
+        # plan_block stays empty and the SLM runs exactly as wave-9.1.
+        plan_block = ""
+        if self.planner_model:
+            try:
+                planner = FrontierPlanner(
+                    api_key=self.vlm.api_key, model=self.planner_model,
+                    image_max_dim=self.vlm.image_max_dim)
+                plan = planner.plan(self.goal_png,
+                                    goal_name=_extract_goal_name(self.goal_png))
+                if plan:
+                    (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))
+                    plan_block = render_plan_block(plan, self.plan_format)
+                    print(f"[planner] plan ready: {len(plan.get('steps', []))} steps, "
+                          f"format={self.plan_format}", flush=True)
+            except Exception as exc:  # noqa: BLE001 — never block the run on planning
+                print(f"[planner] skipped ({type(exc).__name__}: {exc})", flush=True)
 
         try:
             # Clear stale state before launch so the Document Recovery
@@ -389,6 +417,7 @@ class AgentTrajectoryRunner:
                         current_png=current_png,
                         step_idx=step_idx,
                         max_history_hint=hist_hint,
+                        plan_block=plan_block,
                     )
                 except ValueError as exc:
                     # Parser couldn't extract a JSON action from the model's

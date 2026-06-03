@@ -1075,7 +1075,8 @@ class OpenRouterVLMClient:
 
     def next_action(self, system_prompt: str, goal_png: Path,
                     current_png: Path, step_idx: int,
-                    max_history_hint: str | None = None) -> VLMResponse:
+                    max_history_hint: str | None = None,
+                    plan_block: str | None = None) -> VLMResponse:
         user_text = (
             f"Step {step_idx}. The two attached images are the GOAL_STATE "
             f"(target the cursor should drive FreeCAD toward) and the "
@@ -1085,6 +1086,10 @@ class OpenRouterVLMClient:
             f"If the CURRENT_STATE already matches the GOAL_STATE, return "
             f'{{"action": {{"type": "terminate"}}, "rationale": "goal reached"}}.'
         )
+        # frontier-onepass: lead with the frontier BUILD_PLAN so it dominates the
+        # turn (it is authoritative guidance, history is secondary).
+        if plan_block:
+            user_text += "\n\n" + plan_block
         if max_history_hint:
             user_text += f"\n\nRecent history:\n{max_history_hint}"
         if self._is_qwen:
