@@ -123,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="How the BUILD_PLAN is surfaced downstream: a ready "
                              "one-line python_eval reconstruction (default) or "
                              "per-step build_* primitive ops.")
+    parser.add_argument("--gui-only", action="store_true",
+                        help="pure-gui: disable python_eval/build_*; model only via GUI.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -165,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         planner_model=args.planner_model,
         plan_format=args.plan_format,
         planner_reasoning=args.planner_reasoning,
+        gui_only=args.gui_only,
     )
     result = runner.run()
 

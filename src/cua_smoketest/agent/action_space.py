@@ -175,17 +175,20 @@ class ActionExecutor:
     pyautogui is imported lazily so DISPLAY can be set first by the caller.
     """
 
-    def __init__(self, state_probe_path: "str | None" = None):
+    # pure-gui: code-based modelling actions, blocked when gui_only is set.
+    CODE_TYPES = {"python_eval", "build_box", "build_cylinder", "build_sphere",
+                  "build_torus", "cut", "fuse", "compound"}
+
+    def __init__(self, state_probe_path: "str | None" = None,
+                 gui_only: bool = False):
         import pyautogui  # noqa: PLC0415
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.05
         self._pg = pyautogui
-        # Wave-9 S2: when set, every python_eval also exec()s this on-disk
-        # probe script in the FreeCAD console. The probe writes the live
-        # ActiveDocument object bboxes to a JSON sidecar, which the runner
-        # reads back and injects as AGENT_STATE on the next turn (refutes the
-        # "build didn't take effect" loop + exposes parts stacked at origin).
         self._state_probe_path = state_probe_path
+        # pure-gui branch: when True, reject all code/console actions — the
+        # agent must model entirely through the GUI (menus, clicks, keys).
+        self._gui_only = gui_only
 
     def execute(self, action: dict[str, Any]) -> ExecutionResult:
         if not isinstance(action, dict) or "type" not in action:
@@ -193,6 +196,11 @@ class ActionExecutor:
         t = action["type"]
         if t not in VALID_TYPES:
             return ExecutionResult(False, f"unknown action type: {t!r}")
+        if self._gui_only and t in self.CODE_TYPES:
+            return ExecutionResult(False, f"GUI-ONLY MODE: '{t}' is disabled. No "
+                                   "code/console allowed — model via the GUI "
+                                   "(Part workbench primitives + property editor, "
+                                   "menus, clicks, keyboard).")
         try:
             return getattr(self, f"_do_{t}")(action)
         except Exception as exc:  # noqa: BLE001

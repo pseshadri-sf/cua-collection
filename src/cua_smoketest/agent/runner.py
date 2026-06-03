@@ -214,6 +214,26 @@ def _build_agent_state_hint(state: dict) -> str:
     return hint + "\n"
 
 
+_GUI_ONLY_FC_PROMPT = (
+    "GUI-ONLY MODE — NO CODE. python_eval and all build_*/cut/fuse/compound "
+    "actions are DISABLED and will be rejected. You must model the asset entirely "
+    "through the FreeCAD GUI:\n"
+    "  1. switch_workbench to 'Part'.\n"
+    "  2. Add each primitive via menu_navigate Part > Primitives > Box (also "
+    "Cylinder/Sphere/Cone/Torus) — this creates a default primitive at the origin.\n"
+    "  3. Set its dimensions and Placement in the Combo View 'Data' (property) "
+    "editor: click the property's value cell and type the number (use the bbox / "
+    "per-part origins from GOAL_METADATA). double_click a field to edit; press "
+    "Enter to commit.\n"
+    "  4. Repeat for every part; position each with its Placement so parts don't "
+    "overlap at the origin.\n"
+    "  5. frame_view to inspect, and terminate when CURRENT_STATE matches GOAL.\n"
+    "Allowed actions ONLY: move_to, click, double_click, right_click, type, key, "
+    "hotkey, scroll, menu_navigate, switch_workbench, focus_viewport, frame_view, "
+    "sleep, terminate.\n\n"
+)
+
+
 class AgentTrajectoryRunner:
     def __init__(self, *, goal_png: Path, output_dir: Path,
                  vlm: OpenRouterVLMClient,
@@ -236,7 +256,9 @@ class AgentTrajectoryRunner:
                  # rendering ("python_eval" default, or "build_star").
                  planner_model: str | None = None,
                  plan_format: str = "python_eval",
-                 planner_reasoning: str = "low"):
+                 planner_reasoning: str = "low",
+                 gui_only: bool = False):
+        self.gui_only = gui_only
         self.planner_reasoning = planner_reasoning
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
@@ -304,7 +326,8 @@ class AgentTrajectoryRunner:
         probe_path = Path(f"/tmp/cua_s2_{wid}.py")
         state_json_path.unlink(missing_ok=True)  # drop any stale prior-job state
         probe_path.write_text(_STATE_PROBE_SRC.replace("__STATE_JSON__", str(state_json_path)))
-        executor = ActionExecutor(state_probe_path=str(probe_path))
+        executor = ActionExecutor(state_probe_path=str(probe_path),
+                                  gui_only=self.gui_only)
 
         recorder = ScreenRecorder(
             display=session.display,
@@ -324,6 +347,8 @@ class AgentTrajectoryRunner:
         # block injected as guidance every turn. Best-effort: on any failure the
         # plan_block stays empty and the SLM runs exactly as wave-9.1.
         plan_block = ""
+        if self.gui_only:
+            plan_block = _GUI_ONLY_FC_PROMPT
         if self.planner_model:
             try:
                 planner = FrontierPlanner(

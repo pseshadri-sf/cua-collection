@@ -51,6 +51,26 @@ _apply()
 '''
 
 
+_GUI_ONLY_BL_PROMPT = (
+    "GUI-ONLY MODE — NO CODE. python_eval / open_python_console / build_* are "
+    "DISABLED and will be rejected. Model the asset entirely through the Blender "
+    "GUI:\n"
+    "  1. Delete the default cube if not needed: hover the viewport, press X then "
+    "Enter (or select + X).\n"
+    "  2. Add each object with the Add menu: hover the 3D viewport and press "
+    "Shift+A (hotkey), then click Mesh > Cube / UV Sphere / Cylinder / Cone / "
+    "Torus / Monkey.\n"
+    "  3. Transform with the keyboard: G = move, S = scale, R = rotate — after "
+    "pressing, type the number(s) and press Enter. Or press N to open the side "
+    "panel and type Location / Dimensions directly.\n"
+    "  4. Place each object at its own location (use GOAL_METADATA per-object "
+    "positions) so they don't overlap at the origin.\n"
+    "  5. frame_all to inspect; terminate when CURRENT_STATE matches GOAL.\n"
+    "Allowed actions ONLY: move_to, click, double_click, right_click, type, key, "
+    "hotkey, scroll, switch_workspace, focus_viewport, frame_all, sleep, terminate.\n\n"
+)
+
+
 SYSTEM_PROMPT_TMPL = """You are an autonomous GUI agent controlling Blender 3.0 \
 on a Linux desktop (1920x1080) via pyautogui.
 
@@ -180,7 +200,9 @@ class BlenderAgentTrajectoryRunner:
                  planner_model: str | None = None,
                  plan_format: str = "python_eval",
                  bright_viewport: bool = False,
-                 planner_reasoning: str = "low"):
+                 planner_reasoning: str = "low",
+                 gui_only: bool = False):
+        self.gui_only = gui_only
         self.planner_reasoning = planner_reasoning
         self.bright_viewport = bright_viewport
         self.goal_png = Path(goal_png).resolve()
@@ -234,7 +256,8 @@ class BlenderAgentTrajectoryRunner:
             blender_binary=blender_bin,
         )
         capture = ScreenshotCapture(shots_dir)
-        executor = BlenderActionExecutor(display=session.display)
+        executor = BlenderActionExecutor(display=session.display,
+                                         gui_only=self.gui_only)
         recorder = ScreenRecorder(
             display=session.display, output=video_path, logs_dir=logs_dir,
         )
@@ -247,6 +270,8 @@ class BlenderAgentTrajectoryRunner:
         # frontier-onepass Variant A (Blender): one frontier call up front →
         # a bpy BUILD_PLAN injected as guidance every turn. Best-effort.
         plan_block = ""
+        if self.gui_only:
+            plan_block = _GUI_ONLY_BL_PROMPT
         if self.planner_model:
             try:
                 from .frontier_planner import FrontierPlanner, render_plan_block

@@ -144,12 +144,16 @@ class BlenderActionExecutor:
     (Python-console toggle, workspace switching, viewport focus).
     """
 
-    def __init__(self, display: str = ":99"):
+    CODE_TYPES = {"python_eval", "open_python_console", "build_box", "build_cylinder",
+                  "build_sphere", "build_torus", "cut", "fuse", "compound"}
+
+    def __init__(self, display: str = ":99", gui_only: bool = False):
         import pyautogui  # noqa: PLC0415
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.05
         self._pg = pyautogui
         self.display = display
+        self._gui_only = gui_only
         # Tracks current workspace so switch_workspace knows how far to cycle.
         self._current_workspace = "Layout"
 
@@ -159,6 +163,11 @@ class BlenderActionExecutor:
         t = action["type"]
         if t not in VALID_TYPES:
             return ExecutionResult(False, f"unknown action type: {t!r}")
+        if self._gui_only and t in self.CODE_TYPES:
+            return ExecutionResult(False, f"GUI-ONLY MODE: '{t}' is disabled. No "
+                                   "code/console allowed — model via the GUI "
+                                   "(Shift+A Add menu, then G/S/R + type to "
+                                   "transform; mouse + keyboard).")
         try:
             return getattr(self, f"_do_{t}")(action)
         except Exception as exc:  # noqa: BLE001

@@ -85,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="How the BUILD_PLAN is surfaced downstream.")
     parser.add_argument("--bright-viewport", action="store_true",
                         help="Force a flat/bright SOLID viewport so the agent + screenshots\n                             can see built geometry (default renders near-black under SW GL).")
+    parser.add_argument("--gui-only", action="store_true",
+                        help="pure-gui: disable python_eval/build_*; model only via GUI.")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -125,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         planner_model=args.planner_model,
         plan_format=args.plan_format,
         planner_reasoning=args.planner_reasoning,
+        gui_only=args.gui_only,
         bright_viewport=args.bright_viewport,
     )
     result = runner.run()
