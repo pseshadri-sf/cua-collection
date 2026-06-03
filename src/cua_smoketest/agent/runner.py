@@ -235,7 +235,9 @@ class AgentTrajectoryRunner:
                  # guidance every turn. plan_format picks the downstream
                  # rendering ("python_eval" default, or "build_star").
                  planner_model: str | None = None,
-                 plan_format: str = "python_eval"):
+                 plan_format: str = "python_eval",
+                 planner_reasoning: str = "low"):
+        self.planner_reasoning = planner_reasoning
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
         self.vlm = vlm
@@ -326,7 +328,8 @@ class AgentTrajectoryRunner:
             try:
                 planner = FrontierPlanner(
                     api_key=self.vlm.api_key, model=self.planner_model,
-                    image_max_dim=self.vlm.image_max_dim)
+                    image_max_dim=self.vlm.image_max_dim,
+                    reasoning_effort=self.planner_reasoning)
                 plan = planner.plan(self.goal_png,
                                     goal_name=_extract_goal_name(self.goal_png))
                 if plan:

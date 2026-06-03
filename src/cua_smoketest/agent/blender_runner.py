@@ -179,7 +179,9 @@ class BlenderAgentTrajectoryRunner:
                  escalate_to_effort: str = "high",
                  planner_model: str | None = None,
                  plan_format: str = "python_eval",
-                 bright_viewport: bool = False):
+                 bright_viewport: bool = False,
+                 planner_reasoning: str = "low"):
+        self.planner_reasoning = planner_reasoning
         self.bright_viewport = bright_viewport
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
@@ -251,7 +253,8 @@ class BlenderAgentTrajectoryRunner:
                 from .vlm_client import _extract_goal_name
                 planner = FrontierPlanner(api_key=self.vlm.api_key,
                                           model=self.planner_model, app="blender",
-                                          image_max_dim=self.vlm.image_max_dim)
+                                          image_max_dim=self.vlm.image_max_dim,
+                                          reasoning_effort=self.planner_reasoning)
                 plan = planner.plan(self.goal_png, goal_name=_extract_goal_name(self.goal_png))
                 if plan:
                     (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))

@@ -77,6 +77,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--planner-model", default=None,
                         help="frontier-onepass: OpenRouter model id for the "
                              "one-pass frontier planner (bpy plan for Blender).")
+    parser.add_argument("--planner-reasoning", choices=("low","medium","high"),
+                        default="low",
+                        help="Reasoning effort for the frontier planner call.")
     parser.add_argument("--plan-format", choices=("python_eval", "build_star"),
                         default="python_eval",
                         help="How the BUILD_PLAN is surfaced downstream.")
@@ -121,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         escalate_to_effort=args.escalate_to_effort,
         planner_model=args.planner_model,
         plan_format=args.plan_format,
+        planner_reasoning=args.planner_reasoning,
         bright_viewport=args.bright_viewport,
     )
     result = runner.run()

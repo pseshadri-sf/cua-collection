@@ -115,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
                              "google/gemini-3-pro-preview). When set, the "
                              "frontier model plans the whole build at step 0 and "
                              "the plan guides the executor (Variant A).")
+    parser.add_argument("--planner-reasoning", choices=("low","medium","high"),
+                        default="low",
+                        help="Reasoning effort for the frontier planner call.")
     parser.add_argument("--plan-format", choices=("python_eval", "build_star"),
                         default="python_eval",
                         help="How the BUILD_PLAN is surfaced downstream: a ready "
@@ -161,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
         escalate_to_effort=args.escalate_to_effort,
         planner_model=args.planner_model,
         plan_format=args.plan_format,
+        planner_reasoning=args.planner_reasoning,
     )
     result = runner.run()
 
