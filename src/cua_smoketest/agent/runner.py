@@ -520,9 +520,15 @@ class AgentTrajectoryRunner:
                 # Force-terminate to save VLM cost and surface the failure
                 # mode clearly (vs. silently hitting max_steps).
                 if self.loop_kill_repeats >= 2:
-                    tail = [json.dumps(s.action, sort_keys=True)
-                            for s in steps[-self.loop_kill_repeats:]
-                            if s.action is not None]
+                    # Count the last N *real* (non-auto) actions. The synthetic
+                    # frame_view steps injected after each python_eval would
+                    # otherwise interleave py/frame/py/frame and hide an
+                    # identical-emit loop from this check (the bug behind the
+                    # planner-regime 26x re-emit). Filter them out first.
+                    real = [s.action for s in steps
+                            if s.action is not None and not s.action.get("_auto")]
+                    tail = [json.dumps(a, sort_keys=True)
+                            for a in real[-self.loop_kill_repeats:]]
                     if (len(tail) == self.loop_kill_repeats
                             and len(set(tail)) == 1):
                         print(f"[loop-kill] step {step_idx}: identical action "

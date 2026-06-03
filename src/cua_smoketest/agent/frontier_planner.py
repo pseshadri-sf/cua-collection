@@ -74,10 +74,13 @@ OUTPUT: a single JSON object, no prose outside it, matching this schema:
     ...
   ],
   "full_code": "<ONE-LINE, semicolon-joined, console-ready python_eval that
-      reconstructs the ENTIRE asset: doc=App.newDocument();import Part,FreeCAD as
-      App; <build+translate every part>; <compound/boolean>; o=doc.addObject(
-      'Part::Feature','<name>');o.Shape=<final>;doc.recompute() — NO newlines,
-      NO def/for-loops that span lines>",
+      reconstructs the ENTIRE asset. It MUST be IDEMPOTENT — re-running it must
+      NOT create extra documents. Start by reusing+clearing ONE document:
+      import Part,FreeCAD as App; doc=App.ActiveDocument or App.newDocument();
+      [doc.removeObject(o.Name) for o in list(doc.Objects)]; <build+translate
+      every part>; <compound/boolean>; o=doc.addObject('Part::Feature','<name>');
+      o.Shape=<final>;doc.recompute() — NEVER call App.newDocument()
+      unconditionally; NO newlines, NO def/for-loops that span lines>",
   "validation_targets": { "object_count": <int>, "bbox_mm": [x,y,z] },
   "fallback": "<simplest acceptable single-primitive approximation + est. score>"
 }
@@ -337,9 +340,12 @@ def render_plan_block(plan: dict[str, Any], plan_format: str = "python_eval") ->
     if plan_format == "python_eval":
         lines += [
             "",
-            "RECOMMENDED python_eval (emit this as one action to build the whole "
-            "asset, then frame/terminate; adapt dims only if the viewport clearly "
-            "disagrees):",
+            "DO THIS: emit the python_eval below ONCE to build the whole asset. "
+            "It is idempotent (reuses+clears one document), so it already creates "
+            "the full model in a single shot. After it runs, your NEXT action MUST "
+            'be {"type":"terminate"} — do NOT re-emit it. Re-running the same code '
+            "wastes steps and will trigger loop-kill. Only emit DIFFERENT code if "
+            "AGENT_STATE shows the build genuinely failed or is wrong.",
             f"  {p.get('full_code','')}",
         ]
     else:  # build_star
