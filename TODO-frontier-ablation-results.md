@@ -39,3 +39,18 @@ Gemini call dominates the ~handful of cheap SLM calls — the fix's
   are short now.
 - Next (deferred): best-of-3 with per-asset plan cache to confirm the score lift
   vs wave-9.1 best-of-3.
+
+## Component-level scoring (wave-11, decompose already on)
+Per goal-part / goal-object reconstruction (goal `parts`/`objects_meta` matched to
+agent sub-solids / objects by position; score = 0.4·pos + 0.3·volume + 0.3·dims):
+- FreeCAD (29 multi-part assets): **74.8/100 mean per-component, 94% coverage**.
+  Weak: curved HVAC ducts/elbows (29–44 — agent collapses a curved transition to 1 box).
+- Blender (21 multi-object assets): **87.1/100, 92% coverage**.
+  Weak: random-scatter scenes (12–66 — goal positions are RANDOM, unmatchable by plan).
+Saved: component_scores_fc.json / component_scores_bl.json.
+
+## BL bright-viewport A/B (35 BL, planner)
+WITHOUT bright 86.9 -> WITH bright 86.4 (Δ -0.5, within noise). Forcing a
+visible viewport does NOT lift BL scores in the planner regime — the agent
+one-shots the plan and terminates, so it doesn't rely on seeing its build.
+Kept as a debug aid (--bright-viewport), default off.
