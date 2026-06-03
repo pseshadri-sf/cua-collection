@@ -72,7 +72,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--decompose", action="store_true",
                         help="Wave-4.1: append per-part bbox+origin table to "
                              "GOAL_METADATA when the sidecar has a `parts` list.")
+    # frontier-onepass: accepted for CLI parity with the FreeCAD entrypoint so
+    # shared jobs-files don't crash Blender jobs. The frontier planner is not yet
+    # integrated into the Blender runner, so these are currently no-ops for BL.
+    parser.add_argument("--planner-model", default=None,
+                        help="(accepted, not yet wired for Blender)")
+    parser.add_argument("--plan-format", choices=("python_eval", "build_star"),
+                        default="python_eval",
+                        help="(accepted, not yet wired for Blender)")
     args = parser.parse_args(argv)
+    if args.planner_model:
+        print("[planner] note: Blender planner not yet integrated; running "
+              "Blender baseline (FreeCAD-only frontier planner for now).",
+              flush=True)
 
     if args.env_file:
         for k, v in _load_env_file(Path(args.env_file)).items():
