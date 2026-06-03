@@ -281,12 +281,17 @@ class AgentTrajectoryRunner:
         )
         capture = ScreenshotCapture(shots_dir)
 
-        # Wave-9 S2: write the document-state probe and point the executor at
+        # Wave-9.1 S2: write the document-state probe and point the executor at
         # it. After each python_eval the probe dumps the live ActiveDocument
-        # object bboxes to agent_state.json, which we read back below to build
-        # an AGENT_STATE hint for the next turn.
-        state_json_path = self.output_dir / "agent_state.json"
-        probe_path = self.output_dir / "_state_probe.py"
+        # object bboxes to a JSON file we read back to build the AGENT_STATE
+        # hint for the next turn. Paths live under /tmp and are SHORT (keeps the
+        # typed `exec(open(...))` console line ~40 chars so it lands reliably —
+        # the long output_dir path in wave-9 corrupted the line 58% of the
+        # time). Unique per worker to avoid cross-worker collisions.
+        wid = os.environ.get("CUA_WORKER_ID") or f"pid{os.getpid()}"
+        state_json_path = Path(f"/tmp/cua_s2_{wid}.json")
+        probe_path = Path(f"/tmp/cua_s2_{wid}.py")
+        state_json_path.unlink(missing_ok=True)  # drop any stale prior-job state
         probe_path.write_text(_STATE_PROBE_SRC.replace("__STATE_JSON__", str(state_json_path)))
         executor = ActionExecutor(state_probe_path=str(probe_path))
 
@@ -471,6 +476,9 @@ class AgentTrajectoryRunner:
                     try:
                         state = json.loads(state_json_path.read_text())
                         agent_state_hint = _build_agent_state_hint(state)
+                        # Keep a record copy in the job dir for offline analysis.
+                        (self.output_dir / "agent_state.json").write_text(
+                            json.dumps(state))
                     except (OSError, ValueError):
                         pass  # probe didn't write / malformed — skip this turn
                 if not exec_result.ok:

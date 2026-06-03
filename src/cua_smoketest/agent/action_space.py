@@ -326,12 +326,6 @@ class ActionExecutor:
         # Wave-8 item A: append ViewFit via the Python console (deterministic,
         # doesn't depend on viewport focus state).
         code_with_fit = code.rstrip(" ;") + ";Gui.SendMsgToActiveView('ViewFit')"
-        # Wave-9 S2: append a state-probe exec on the SAME console line. Kept
-        # short (the probe body lives in an on-disk .py) so it doesn't bloat
-        # the typed string. exec() failures only print to the console; they
-        # never affect the agent's build.
-        if self._state_probe_path:
-            code_with_fit += ";exec(open(r'%s').read())" % self._state_probe_path
         # 1. Open the Python console (idempotent).
         seq = MENU_PATHS.get(("View", "Panels", "Python console"))
         if seq is not None:
@@ -352,6 +346,20 @@ class ActionExecutor:
         # 4. Execute.
         self._pg.press("enter")
         time.sleep(1.5)  # Mesa SW OpenGL needs ~1.5s to repaint
+        # Wave-9.1 S2: run the state probe as a SEPARATE, SHORT console
+        # submission (not appended to the build line — that made the typed
+        # line long enough for autocomplete/timing to corrupt the tail, so it
+        # only landed ~42% of the time in wave-9). The probe path is short
+        # (/tmp/...) so this line stays ~40 chars and types cleanly.
+        if self._state_probe_path:
+            self._pg.moveTo(cx, cy, duration=0.15)
+            self._pg.click()
+            time.sleep(0.2)
+            self._pg.typewrite("exec(open(r'%s').read())" % self._state_probe_path,
+                               interval=0.01)
+            time.sleep(0.15)
+            self._pg.press("enter")
+            time.sleep(0.5)
         # Wave-8 item B: belt-and-suspenders — also tap viewport keys for
         # iso + fit-all. Cheap (~600ms) and covers the case where ViewFit
         # didn't take effect (e.g. console swallowed it, or active view is
