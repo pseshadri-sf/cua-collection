@@ -3,6 +3,20 @@
 **Branch:** `frontier-onepass` (isolated worktree; main tree stays on `wave-9`
 for the running benchmark). This is a SCOPE/design doc — nothing implemented yet.
 
+## Decisions (locked)
+
+- **Variant A — plan-as-guidance** is what we build. The frontier model plans;
+  the qwen3-vl-30b executor still decides each action against the live viewport.
+- **Downstream action format: `python_eval` FIRST, then `build_*` primitives.**
+  Ship the planner emitting raw `python_eval` (full expressivity — revolves,
+  lofts, booleans, the organic shapes that `build_*` can't express), benchmark
+  it, then add a `build_*`-restricted plan mode and compare. Both go through the
+  SAME plan; only the per-step `code`/`op` representation differs.
+- **Plan structure refined from the [earthtojake/text-to-cad] skill set** — see
+  the dedicated section below. The frontier call front-loads text-to-cad's
+  "classify → CAD brief → parameter plan → ordered build" so the SLM inherits a
+  parameters-first, datum-explicit, failure-class-aware plan.
+
 ## Motivation (why this, why now)
 
 The wave-9d failure-mode analysis showed the small VLM's failures are
@@ -73,25 +87,43 @@ is auditable.
 - The action-space spec (build_box/cylinder/sphere/torus, compound/fuse,
   python_eval) so the plan is expressed in primitives the SLM can actually emit.
 
-**Output schema (recommend STRUCTURED, validated):**
+**Output schema (STRUCTURED, validated) — refined from the text-to-cad skill
+workflow.** The frontier model front-loads text-to-cad steps 1/3/5/6 (classify,
+CAD brief, parameter plan, source) so the plan arrives parameters-first and
+datum-explicit:
+
 ```json
 {
-  "summary": "EUR-1 pallet: 3 deck boards on 9 blocks on 3 stringers",
+  "brief": "EUR-1 pallet, 1200x800x144 mm. 3 top deck boards + 5 lead boards on
+            9 blocks on 3 bottom stringers. Origin at base-center, +Z up.",
   "shape_class": "assembly | single_solid | revolve | boolean",
+  "parameters": {"L": 1200, "W": 800, "H": 144, "board_t": 22, "block_h": 78},
+  "conventions": {"units": "mm", "origin": "base-center", "up": "+Z"},
   "steps": [
-    {"i": 1, "op": "build_box", "dims": [1200,100,22], "origin": [0,0,122],
-     "name": "deck_top", "why": "top deck board"},
-    {"i": 2, "op": "build_box", "dims": [...], "origin": [...], "name": "...", "why": "..."},
-    {"i": 7, "op": "compound", "shapes": ["deck_top","..."], "name": "pallet"}
+    {"i": 1, "name": "deck_top",
+     "code": "deck_top=Part.makeBox(L,100,board_t); deck_top.translate(App.Vector(-L/2,-50,H-board_t))",
+     "op": "build_box", "dims": [1200,100,22], "origin": [-600,-50,122],
+     "why": "top deck board, flush with +Z face"},
+    {"i": 7, "name": "pallet",
+     "code": "pallet=Part.makeCompound([deck_top, ...])",
+     "op": "compound", "shapes": ["deck_top", "..."]}
   ],
-  "fallback": "if assembly is too complex, a single 1200x800x144 box scores ~50"
+  "validation_targets": {"object_count": 17, "bbox_mm": [1200,800,144]},
+  "fallback": "if assembly too complex, a single makeBox(1200,800,144) ~ score 50"
 }
 ```
-Structured output is validated (retry on mismatch), maps 1:1 onto the SLM's
-action space, and lets the runner track plan progress mechanically.
 
-Alternatives considered: (a) free-text NL plan — easy but not machine-trackable;
-(b) a single ready-to-run python_eval reconstruction — see Variant B.
+- Each step carries BOTH a ready `code` line (python_eval-first downstream) AND
+  the structured `op`/`dims`/`origin` fields (used when we switch to `build_*`).
+  One plan, two renderings — no re-planning to compare the two downstream modes.
+- `parameters` + `conventions` enforce text-to-cad's **parameters-first** and
+  **mm / base-center / +Z** rules; `validation_targets` give the runner concrete
+  numbers to reconcile against S2 AGENT_STATE (our "inspect refs" analog).
+- Validated (retry on schema mismatch); planner temperature 0; cached to
+  `build_plan.json`.
+
+Alternatives considered: (a) free-text NL plan — not machine-trackable;
+(b) single ready-to-run python_eval reconstruction — that's Variant B (deferred).
 
 ## Integration variants (pick per asset class / ablate)
 
@@ -107,8 +139,81 @@ Alternatives considered: (a) free-text NL plan — easy but not machine-trackabl
   shows a mismatch (missing parts, wrong bbox), hand control to the SLM in
   Variant-A mode to repair from that state. Best expected quality; most code.
 
-Recommend implementing **A first** (smallest change, isolates the planning
-benefit), then **C** if A shows lift on multi-part assets.
+**Locked: build A first** (smallest change, isolates the planning benefit), with
+`python_eval` downstream first then `build_*`. Revisit C only if A shows lift on
+multi-part assets.
+
+## Refinement from the text-to-cad skill set
+
+text-to-cad ([earthtojake/text-to-cad], `skills/cad/SKILL.md` + references) is a
+build123d/STEP pipeline whose agent follows a fixed workflow. Our pipeline is
+single-shot `python_eval` into a live FreeCAD GUI — no persistent source, no
+post-build inspection, no defined repair loop. The one-pass frontier planner is
+how we get most of text-to-cad's *planning* discipline without adopting its
+whole build123d/source-file machinery: **the frontier call performs text-to-cad
+steps 1–6 once; the SLM loop covers 7–10 using our existing infra.**
+
+### Mapping text-to-cad's 10 steps onto this design
+
+| text-to-cad step | Where it lives here |
+|---|---|
+| 1. Classify task | `shape_class` field in the plan (single_solid / assembly / revolve / boolean) |
+| 2. Progressive reference load | already have app-gated prompt blocks (B1); planner gets metadata + decompose |
+| 3. Natural-language CAD brief | `brief` field — frontier writes it from the goal image + metadata |
+| 4. Off-the-shelf parts search | OUT of scope v1 (no local catalog yet; tracked as A1) |
+| 5. Plan parameters/labels/datums/bbox | `parameters` + `conventions` + per-step `name` |
+| 6. Edit source (parameters-first, gen_step) | per-step `code` lines, parameters-first, closed solids |
+| 7. Generate | SLM types `code` into the FreeCAD console (existing executor) |
+| 8. Inspect refs (facts/planes/positioning) | **S2 AGENT_STATE** readback (wave-9.1) vs `validation_targets` |
+| 9. Snapshot review (multi-view) | **S3 multi-view goal atlas** (already in pipeline) + per-turn screenshot |
+| 10. Repair loop (named classes) | per-turn repair hints keyed to the failure classes below |
+
+### text-to-cad conventions baked into the plan prompt
+
+The planner system prompt adopts text-to-cad's defaults verbatim so plans are
+consistent and SLM-executable:
+- **Units mm; origin at part/assembly center; XY base, +Z up; closed,
+  positive-volume solids.** (matches our GOAL_METADATA bbox units.)
+- **Parameters-first**: declare all controls before features → enables
+  single-number repair and clean ablation.
+- **Topology in dependency order**; **booleans on closed operands**; **explicit
+  `translate`/`Location` per part** (directly attacks our #1 FC failure —
+  stacking at origin).
+- **Named labels** per part (also earns our evaluator's name_overlap points).
+- Sensible defaults when unspecified: wall 2–3 mm, cosmetic fillet 1–3 mm,
+  clearance holes M3/M4/M5 = 3.4/4.5/5.5 mm.
+
+### Failure-class-aware repair (text-to-cad's 9 classes → our S2 hints)
+
+text-to-cad's `repair-loop.md` names 9 failure classes; we already started this
+in wave-9 A2 (MISSING_TRANSLATIONS == "positioning mismatch"). Extend the S2
+AGENT_STATE reconciliation to emit a named, recipe-bearing hint per class:
+
+| text-to-cad failure class | Our trigger (from S2 AGENT_STATE vs plan) | Injected recipe |
+|---|---|---|
+| Wrong scale / bounding box | built bbox ≠ `validation_targets.bbox_mm` | "scale off on axis X: built 80 vs target 120 — fix the dim" |
+| Missing feature | built `object_count` < plan steps done | "you've built k/N plan parts; emit the next: <step.code>" |
+| Positioning / joint mismatch | parts cluster at one center (wave-9 A2) | MISSING_TRANSLATIONS recipe (already shipped) |
+| Invalid/missing geometry | S2 reports 0 objects after a build | "code ran but built nothing — check addObject + recompute" |
+| Source/syntax | exec_error present | "fix syntax; keep one-line, semicolon-joined" |
+| Selector fragility / fillet | (defer — needs addressable refs / build123d) | — |
+
+### Snapshot-review triggers → reuse S3 multi-view
+
+text-to-cad adds extra camera views on risk triggers — "assemblies / >1 body",
+"holes on multiple faces or axes", "shells, cavities, bores → section view".
+Our S3 multi-view atlas already renders iso+front+top+right and auto-adds a
+section view when `bbox_volume/mesh_volume > 1.5`. The planner should *consume*
+those views (it gets the same atlas the SLM sees) so the decomposition reflects
+top-view tooth/hole counts and section-revealed cavities — the exact cases where
+the SLM currently bbox-approximates.
+
+### What we deliberately do NOT port (v1)
+
+Persistent `gen_part.py` source-of-truth, addressable `@cad[#selector]` refs,
+build123d DSL adoption, off-the-shelf parts catalog. These are larger lifts
+(tracked in `TODO-text-to-cad.md`); the one-pass planner captures the
+high-leverage planning skills without them.
 
 ## Models
 
@@ -129,25 +234,34 @@ benefit), then **C** if A shows lift on multi-part assets.
 ## Implementation sketch (when greenlit)
 
 1. New `frontier_planner.py`: `plan(goal_png, metadata, action_spec, model) ->
-   BuildPlan` using the OpenRouter client + a strict JSON schema.
+   BuildPlan` via the OpenRouter client + strict JSON schema. System prompt
+   carries the text-to-cad conventions + the brief→params→steps structure.
+   Emits per-step `code` (python_eval) AND `op/dims/origin` (for build_* later).
 2. `runner.py`: at step 0, call the planner (guarded by `--planner-model`),
    write `build_plan.json`, hold it in memory.
 3. `vlm_client.next_action(..., build_plan=..., plan_step=...)`: render a
-   `BUILD_PLAN` block + "you are on step k/N: <step>" into the prompt (Variant A).
-4. Plan-progress tracking in the runner: compare S2 AGENT_STATE bboxes to the
-   current step's expected bbox; advance pointer on match, inject a targeted
-   repair hint on mismatch.
-5. `agent_trajectory.py` + orchestrator jobs-file: add `--planner-model` to
-   `extra_args` so it's a per-job toggle (ablatable in the benchmark).
+   `BUILD_PLAN` block (brief + parameters + ordered steps) + "you are on step
+   k/N: <step.code>" into the prompt (Variant A). **python_eval-first:** show
+   the step's `code` line; the SLM may emit it verbatim or adapt.
+4. Plan-progress + failure-class repair in the runner: compare S2 AGENT_STATE to
+   `validation_targets` and the current step's expected bbox; advance pointer on
+   match, else inject the matching named-failure-class recipe (table above).
+5. `--planner-model` flag (+ `--plan-format python_eval|build_star`) plumbed
+   through `agent_trajectory.py` → `extra_args` so it's per-job ablatable.
 
 ## Evaluation plan
 
 - Benchmark on the SAME 50 wave9d assets, best-of-3, vs the wave-9.1 baseline.
-- Ablate: A vs B vs C; planner-on vs planner-off; per asset class
-  (single-solid vs multi-part — expect the biggest lift on multi-part, which
-  the SLM stacks today).
+- **Ablation order (locked):** (1) planner-off baseline [= wave-9.1],
+  (2) Variant A + `python_eval` plan, (3) Variant A + `build_*` plan. Compare 2
+  vs 3 head-to-head; defer B/C.
+- Slice by asset class: single-solid (20/32 FC — expect little movement, bbox
+  ceiling) vs multi-part (12/32 FC + assemblies — expect the lift, since these
+  are the stacking failures the plan targets).
 - Primary metric: match_score mean (FC/BL/overall) + the wave-9d failure-mode
   tallies (stacking rate, code-diversity, translate usage, self-terminate rate).
+- Track planner cost/latency per asset and plan-vs-built bbox agreement (did the
+  SLM actually follow the plan?).
 
 ## Risks & mitigations
 
@@ -164,11 +278,17 @@ benefit), then **C** if A shows lift on multi-part assets.
   tracked separately. Frontier planning mainly helps the multi-part tier.
 - **Determinism/replay** → cache `build_plan.json`; planner temperature 0.
 
-## Open questions (for the user)
+## Resolved / remaining questions
 
-1. Variant to build first — A (guidance, recommended), B (script), or C (hybrid)?
-2. Planner budget: cap to multi-part assets only (where the win is), or all 50?
-3. Frontier model preference (Sonnet-class default for cost) — any constraint?
-4. Should the plan be allowed to emit raw `python_eval` (full expressivity, incl.
-   revolves/booleans for organic shapes) or be restricted to the structured
-   build_* primitives (safer, trackable)?
+Resolved by the user:
+- **Variant A first.** ✓
+- **`python_eval` downstream first, then `build_*`.** ✓ (one plan, both renderings.)
+- **Plan refined from the text-to-cad skills.** ✓ (section above.)
+
+Still open (sensible defaults in parens — will proceed on these unless told otherwise):
+1. Planner model (default: `anthropic/claude-sonnet-4-6` via OpenRouter for
+   price/quality; bump to Opus only if Sonnet plans underperform).
+2. Planner budget — all 50 (default, planner call is cheap + gives a single-solid
+   control group) or cap to multi-part assets?
+3. If the goal image contradicts GOAL_METADATA bbox, may the planner override it?
+   (Default: trust metadata; note the disagreement in the brief.)
