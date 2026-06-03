@@ -7,11 +7,28 @@ for the running benchmark). This is a SCOPE/design doc — nothing implemented y
 
 - **Variant A — plan-as-guidance** is what we build. The frontier model plans;
   the qwen3-vl-30b executor still decides each action against the live viewport.
-- **Downstream action format: `python_eval` FIRST, then `build_*` primitives.**
-  Ship the planner emitting raw `python_eval` (full expressivity — revolves,
-  lofts, booleans, the organic shapes that `build_*` can't express), benchmark
-  it, then add a `build_*`-restricted plan mode and compare. Both go through the
-  SAME plan; only the per-step `code`/`op` representation differs.
+- **Downstream action format: `python_eval`.** `build_*` is DEMOTED (see
+  reassessment below). `python_eval` gives full expressivity (revolves, lofts,
+  booleans — the organic shapes `build_*` cannot express) and already won both
+  tiers in wave-10. `build_*` is a strict SUBSET of `python_eval`, so it can only
+  cap the custom-shape assets, and its only advantage (per-step trackability) is
+  moot while the SLM one-shots the whole `full_code`. Run `build_*` only as a
+  cheap control on the pure-primitive assembly subset, and only after a per-step
+  verify-repair loop (Variant C) exists to give its trackability something to use.
+
+## Reassessment after wave-10 (why build_* is demoted)
+
+wave-10 (A + python_eval, FC) lifted FreeCAD **58.0 → 65.0 (+7.0)**; S2/A2 was
++0.0. Crucially the single-solid tier moved MOST (+8.8) because the planner used
+revolves/booleans the SLM never could — expressivity that lives in `python_eval`
+and is absent from `build_*`. Plan-adherence was 34/34: the SLM emits the whole
+`full_code` in one action and terminates, so there is no per-step execution for
+`build_*`'s trackability to attach to. Net: `build_*` would likely be flat-to-
+negative and would forfeit the custom-shape gains. The productive directions are
+the OPPOSITE of `build_*`:
+1. give the planner MORE expressivity (explicitly prompt revolve/loft/boolean);
+2. a per-step verify-repair loop (Variant C) keyed to S2 — the real fix for the
+   assembly tier and the one mis-decomposition regression (hvac bend 66→50).
 - **Plan structure refined from the [earthtojake/text-to-cad] skill set** — see
   the dedicated section below. The frontier call front-loads text-to-cad's
   "classify → CAD brief → parameter plan → ordered build" so the SLM inherits a
@@ -252,9 +269,11 @@ high-leverage planning skills without them.
 ## Evaluation plan
 
 - Benchmark on the SAME 50 wave9d assets, best-of-3, vs the wave-9.1 baseline.
-- **Ablation order (locked):** (1) planner-off baseline [= wave-9.1],
-  (2) Variant A + `python_eval` plan, (3) Variant A + `build_*` plan. Compare 2
-  vs 3 head-to-head; defer B/C.
+- **Ablation order (revised):** (1) planner-off baseline [= wave-9.1],
+  (2) Variant A + `python_eval` plan [DONE: FC +7.0], (3) extend planner to
+  Blender + benchmark difficult FC+BL [in progress], (4) best-of-3 to confirm,
+  (5) per-step verify-repair (Variant C). `build_*` deprioritized to an optional
+  control on the assembly subset, after Variant C.
 - Slice by asset class: single-solid (20/32 FC — expect little movement, bbox
   ceiling) vs multi-part (12/32 FC + assemblies — expect the lift, since these
   are the stacking failures the plan targets).
