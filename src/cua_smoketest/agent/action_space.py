@@ -6,6 +6,7 @@ pixels (0,0 = top-left, 1920x1080 default).
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -232,6 +233,14 @@ class ActionExecutor:
                 fh.write(_FRAME_SCRIPT)
         except OSError:
             self._frame_path = None
+        # Per-worker file the build code is written to and exec'd from — typing a
+        # short exec(open(...)) line is far more reliable than typing complex
+        # multi-statement code (math/Part.Face/comprehensions) char-by-char.
+        self._eval_path = "/tmp/cua_eval_%d.py" % os.getpid()
+        # The View>Panels>Python console menu item TOGGLES the panel. Calling it
+        # every step flipped it open/closed, so on alternate steps the console
+        # was CLOSED and typed code went nowhere. Open it exactly once.
+        self._console_opened = False
 
     def execute(self, action: dict[str, Any]) -> ExecutionResult:
         if not isinstance(action, dict) or "type" not in action:
@@ -369,30 +378,37 @@ class ActionExecutor:
         code = a.get("code")
         if not isinstance(code, str) or not code.strip():
             return ExecutionResult(False, "'python_eval' requires non-empty string 'code'")
-        # Frame the result ROBUSTLY + FOCUS-INDEPENDENTLY: exec the frame script
-        # (brings the 3D view to front off the Start page, forces visibility,
-        # iso + fit-all). The 0/v/f key presses below stay as a fallback.
-        code_with_fit = code.rstrip(" ;")
+        # Write the build code to a file and run it via a SHORT typed line. Then
+        # run the frame script (3D view to front, visibility, iso+fit). Typing
+        # `exec(open(...))` is robust where typing complex code is not.
+        try:
+            with open(self._eval_path, "w") as fh:
+                fh.write(code)
+        except OSError:
+            return ExecutionResult(False, "could not write eval file")
+        typed = "exec(open(r'%s').read())" % self._eval_path
         if self._frame_path:
-            code_with_fit += ";exec(open(r'%s').read())" % self._frame_path
-        # 1. Open the Python console (idempotent).
-        seq = MENU_PATHS.get(("View", "Panels", "Python console"))
-        if seq is not None:
-            for kind, x, y, delay in seq:
-                if kind == "click":
-                    self._pg.moveTo(x, y, duration=0.15); self._pg.click()
-                elif kind == "hover":
-                    self._pg.moveTo(x, y, duration=0.15)
-                time.sleep(delay)
-        # 2. Focus the console input.
+            typed += ";exec(open(r'%s').read())" % self._frame_path
         cx, cy = PYTHON_CONSOLE_INPUT_XY
+        # 1. Open the Python console exactly ONCE (the menu item TOGGLES it).
+        if not self._console_opened:
+            seq = MENU_PATHS.get(("View", "Panels", "Python console"))
+            if seq is not None:
+                for kind, x, y, delay in seq:
+                    if kind == "click":
+                        self._pg.moveTo(x, y, duration=0.15); self._pg.click()
+                    elif kind == "hover":
+                        self._pg.moveTo(x, y, duration=0.15)
+                    time.sleep(delay)
+            self._console_opened = True
+            time.sleep(0.4)
+        # 2. Focus the console input (click it; harmless if already focused).
         self._pg.moveTo(cx, cy, duration=0.15)
         self._pg.click()
         time.sleep(0.3)
-        # 3. Type the code (with ViewFit appended).
-        self._pg.typewrite(code_with_fit, interval=0.01)
+        # 3. Type the short exec line + Enter.
+        self._pg.typewrite(typed, interval=0.01)
         time.sleep(0.2)
-        # 4. Execute.
         self._pg.press("enter")
         time.sleep(1.5)  # Mesa SW OpenGL needs ~1.5s to repaint
         # Wave-9.1 S2: run the state probe as a SEPARATE, SHORT console
