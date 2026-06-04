@@ -26,3 +26,30 @@ component at a time. FreeCAD tree grows part_00..part_11.
 - To generate a training set: run with --planner-model gemini-3.1-pro
   --compositional over the asset list (deterministic; ~planner cost + short
   trajectories). Each job yields a fine-grained build video + per-action labels.
+
+## Wave-14 scale eval (50 assets) — quality does NOT hold at scale
+| | compositional | one-shot (wave-11) | Δ |
+|---|---|---|---|
+| FreeCAD (25) | 63.2 | 75.1 | -11.9 |
+| Blender (25) | 85.9 | 94.1 | -8.2 |
+Cost: $0.0225/asset (PLANNER ONLY — deterministic replay makes 0 SLM calls),
+60s/asset, ~0.8h total. Ultra-cheap + fast, clean per-component videos.
+
+Score drop has 3 distinct causes (NOT a single regression):
+1. comps=0 planner failures: compositional plan sometimes has no per-step
+   `code` -> deterministic replay builds NOTHING -> ~0 (torus_array 90->33,
+   nested_spheres 97->48). Planner-reliability bug in compositional mode.
+2. single-solid assets forced to comps=1: a complex single solid (screw, bend)
+   built as ONE coarse component loses the one-shot's richer code
+   (fastener 86->55, rect_bend 78->53).
+3. boolean assets: the "do NOT fuse/compound" directive breaks parts that need
+   booleans (bool_cube_sphere 95->53). Only 4/50 plans used booleans.
+Parity holds ONLY for additive multi-part assets (torus/monkey/sphere_ring/smd
+matched one-shot exactly) — i.e. the chair/robot smoke type.
+
+## Fix to recover quality (keep compositional dynamics)
+1. Fall back to one-shot full_code when object_count<=1 / comps<=1 (compositional
+   only applies to multi-component assets).
+2. Allow per-component booleans (a component MAY be a boolean of primitives,
+   added as one visible object); only forbid fusing ACROSS components.
+3. Guard comps=0: if no per-step code, split full_code into statements or re-plan.
