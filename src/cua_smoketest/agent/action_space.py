@@ -390,18 +390,17 @@ class ActionExecutor:
         if self._frame_path:
             typed += ";exec(open(r'%s').read())" % self._frame_path
         cx, cy = PYTHON_CONSOLE_INPUT_XY
-        # 1. Open the Python console exactly ONCE (the menu item TOGGLES it).
-        if not self._console_opened:
-            seq = MENU_PATHS.get(("View", "Panels", "Python console"))
-            if seq is not None:
-                for kind, x, y, delay in seq:
-                    if kind == "click":
-                        self._pg.moveTo(x, y, duration=0.15); self._pg.click()
-                    elif kind == "hover":
-                        self._pg.moveTo(x, y, duration=0.15)
-                    time.sleep(delay)
-            self._console_opened = True
-            time.sleep(0.4)
+        # 1. Open the Python console (prior wave-17 behavior — re-attempt each
+        #    step; under Xvfb the close-hover often doesn't register so it stays
+        #    open, and re-attempting recovers if an open missed).
+        seq = MENU_PATHS.get(("View", "Panels", "Python console"))
+        if seq is not None:
+            for kind, x, y, delay in seq:
+                if kind == "click":
+                    self._pg.moveTo(x, y, duration=0.15); self._pg.click()
+                elif kind == "hover":
+                    self._pg.moveTo(x, y, duration=0.15)
+                time.sleep(delay)
         # 2. Focus the console input (click it; harmless if already focused).
         self._pg.moveTo(cx, cy, duration=0.15)
         self._pg.click()
