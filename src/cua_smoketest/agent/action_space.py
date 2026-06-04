@@ -162,6 +162,47 @@ You may emit exactly one action per turn, formatted as JSON. Available actions:
 """
 
 
+# Run in the FreeCAD console after every python_eval to guarantee the built
+# asset is visible: bring the document's 3D view to the front (off the Start
+# page that otherwise covers it), force every object visible, set isometric +
+# fit-all. Robust to Qt-binding differences and missing docs.
+_FRAME_SCRIPT = '''\
+import FreeCAD as App, FreeCADGui as Gui
+try:
+    from PySide2.QtWidgets import QMdiArea
+except Exception:
+    try:
+        from PySide.QtGui import QMdiArea
+    except Exception:
+        QMdiArea = None
+# 1) bring the 3D view MDI subwindow to the front (skip the Start page)
+try:
+    if QMdiArea is not None:
+        _mdi = Gui.getMainWindow().findChild(QMdiArea)
+        if _mdi is not None:
+            for _w in _mdi.subWindowList():
+                if "Start" not in _w.windowTitle():
+                    _mdi.setActiveSubWindow(_w)
+except Exception:
+    pass
+# 2) force every object visible
+try:
+    for _o in (App.ActiveDocument.Objects if App.ActiveDocument else []):
+        _o.ViewObject.Visibility = True
+except Exception:
+    pass
+# 3) isometric + fit-all
+try:
+    Gui.activeDocument().activeView().viewIsometric()
+except Exception:
+    pass
+try:
+    Gui.SendMsgToActiveView("ViewFit")
+except Exception:
+    pass
+'''
+
+
 @dataclass
 class ExecutionResult:
     ok: bool
@@ -180,12 +221,17 @@ class ActionExecutor:
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.05
         self._pg = pyautogui
-        # Wave-9 S2: when set, every python_eval also exec()s this on-disk
-        # probe script in the FreeCAD console. The probe writes the live
-        # ActiveDocument object bboxes to a JSON sidecar, which the runner
-        # reads back and injects as AGENT_STATE on the next turn (refutes the
-        # "build didn't take effect" loop + exposes parts stacked at origin).
         self._state_probe_path = state_probe_path
+        # Frame script: bring the document's 3D view to the FRONT (off the
+        # Start page that otherwise covers the asset), force all objects
+        # visible, set isometric + fit-all. Runs focus-independently via the
+        # Gui API after every python_eval. Written once to a fixed path.
+        self._frame_path = "/tmp/cua_frame.py"
+        try:
+            with open(self._frame_path, "w") as fh:
+                fh.write(_FRAME_SCRIPT)
+        except OSError:
+            self._frame_path = None
 
     def execute(self, action: dict[str, Any]) -> ExecutionResult:
         if not isinstance(action, dict) or "type" not in action:
@@ -323,16 +369,12 @@ class ActionExecutor:
         code = a.get("code")
         if not isinstance(code, str) or not code.strip():
             return ExecutionResult(False, "'python_eval' requires non-empty string 'code'")
-        # Frame the result ROBUSTLY and FOCUS-INDEPENDENTLY via the Gui API: set
-        # an isometric camera + fit-all, and force every object visible. The
-        # 0/v/f key presses below need viewport focus (not guaranteed after
-        # typing in the console), which is why thin/small assets sometimes never
-        # appear in the video. Doing it through Gui needs no focus.
-        _frame = (";import FreeCADGui as _G"
-                  ";[setattr(o.ViewObject,'Visibility',True) for o in (App.ActiveDocument.Objects if App.ActiveDocument else [])]"
-                  ";(_G.activeDocument() and _G.activeDocument().activeView().viewIsometric())"
-                  ";_G.SendMsgToActiveView('ViewFit')")
-        code_with_fit = code.rstrip(" ;") + _frame
+        # Frame the result ROBUSTLY + FOCUS-INDEPENDENTLY: exec the frame script
+        # (brings the 3D view to front off the Start page, forces visibility,
+        # iso + fit-all). The 0/v/f key presses below stay as a fallback.
+        code_with_fit = code.rstrip(" ;")
+        if self._frame_path:
+            code_with_fit += ";exec(open(r'%s').read())" % self._frame_path
         # 1. Open the Python console (idempotent).
         seq = MENU_PATHS.get(("View", "Panels", "Python console"))
         if seq is not None:
