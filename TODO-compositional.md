@@ -74,3 +74,15 @@ Cost $0.043/asset ($2.16/50), zero SLM.
 - Option for guaranteed FC parity: append the original full_code as a final
   "snap" step so the END geometry == one-shot (video shows the process, final
   frame is exact). Tradeoff: a clear+rebuild flicker at the end of the video.
+
+## FreeCAD pipeline robustness — SOLVED (wave-19)
+Regression cause: compositional's N python_eval steps re-opened the Python
+console via a TOGGLING menu (closed it on alternate steps) AND opened it too
+early (GUI not settled) -> 47% FC videos showed the build (vs one-shot 80-94%).
+Fix: open the console ONCE after a 10s settle, with a file-marker
+verify-and-retry (write a marker file via the console; retry the open until it
+appears), then never re-toggle. File-based exec(open()) for reliable typing.
+Result: FC videos visible 47% -> 100% (65/65); BL 100%; overall 100/100.
+time/video 90s, cost/video $0.048 ($4.77/100, planner only). The ENTIRE build
+process is visible per video (console=action, 3D view=each component appearing,
+tree grows) — the core training artifact.
