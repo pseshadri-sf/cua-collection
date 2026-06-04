@@ -85,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="How the BUILD_PLAN is surfaced downstream.")
     parser.add_argument("--bright-viewport", action="store_true",
                         help="Force a flat/bright SOLID viewport so the agent + screenshots\n                             can see built geometry (default renders near-black under SW GL).")
+    parser.add_argument("--compositional", action="store_true",
+                        help="compositional_dynamics: replay plan per-component (one python_eval each).")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -125,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         planner_model=args.planner_model,
         plan_format=args.plan_format,
         planner_reasoning=args.planner_reasoning,
+        compositional=args.compositional,
         bright_viewport=args.bright_viewport,
     )
     result = runner.run()

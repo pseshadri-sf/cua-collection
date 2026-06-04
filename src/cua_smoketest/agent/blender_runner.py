@@ -22,6 +22,7 @@ from ..screenshots import ScreenshotCapture
 from .blender_action_space import ACTION_SPACE_SPEC, BlenderActionExecutor
 from .screen_recorder import ScreenRecorder
 from .vlm_client import OpenRouterVLMClient
+from .runner import _CompositionalDone
 
 
 # Run at Blender launch (--python). Forces every 3D viewport to flat, bright
@@ -180,7 +181,9 @@ class BlenderAgentTrajectoryRunner:
                  planner_model: str | None = None,
                  plan_format: str = "python_eval",
                  bright_viewport: bool = False,
-                 planner_reasoning: str = "low"):
+                 planner_reasoning: str = "low",
+                 compositional: bool = False):
+        self.compositional = compositional
         self.planner_reasoning = planner_reasoning
         self.bright_viewport = bright_viewport
         self.goal_png = Path(goal_png).resolve()
@@ -201,6 +204,37 @@ class BlenderAgentTrajectoryRunner:
         self.escalate_to_effort = escalate_to_effort
         self.planner_model = planner_model
         self.plan_format = plan_format
+
+    def _run_compositional(self, plan, executor, capture, shots_dir, steps, t0,
+                           json_path, video_path):
+        """Replay the plan's per-component bpy steps, one python_eval each, so
+        the video shows the scene built object-by-object. Returns terminated_by."""
+        plan_steps = [s for s in plan.get("steps", []) if s.get("code")]
+        print(f"[compositional] BL replaying {len(plan_steps)} component steps", flush=True)
+        for i, st in enumerate(plan_steps, start=1):
+            self._write_json(json_path, steps, video_path=video_path,
+                             terminated_by="in_progress", error=None,
+                             model=self.vlm.model)
+            action = {"type": "python_eval", "code": st["code"]}
+            res = executor.execute(action)
+            time.sleep(max(res.post_action_sleep, self.post_action_delay))
+            png = shots_dir / f"step_{i:02d}_after.png"
+            shot = capture.capture(png.name)
+            if shot.path != png:
+                shot.path.rename(png)
+            steps.append(TrajectoryStep(
+                step_idx=i, action_time=time.monotonic() - t0, action=action,
+                rationale=f"component {i}/{len(plan_steps)}: "
+                          f"{st.get('name','')} — {st.get('why','')}",
+                exec_error=res.error,
+            ))
+            time.sleep(1.0)
+        steps.append(TrajectoryStep(
+            step_idx=len(plan_steps) + 1, action_time=time.monotonic() - t0,
+            action={"type": "terminate"},
+            rationale="all components built (compositional)",
+        ))
+        return "agent"
 
     def run(self) -> TrajectoryResult:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -247,6 +281,7 @@ class BlenderAgentTrajectoryRunner:
         # frontier-onepass Variant A (Blender): one frontier call up front →
         # a bpy BUILD_PLAN injected as guidance every turn. Best-effort.
         plan_block = ""
+        plan_obj = None
         if self.planner_model:
             try:
                 from .frontier_planner import FrontierPlanner, render_plan_block
@@ -254,12 +289,15 @@ class BlenderAgentTrajectoryRunner:
                 planner = FrontierPlanner(api_key=self.vlm.api_key,
                                           model=self.planner_model, app="blender",
                                           image_max_dim=self.vlm.image_max_dim,
-                                          reasoning_effort=self.planner_reasoning)
+                                          reasoning_effort=self.planner_reasoning,
+                                          compositional=self.compositional)
                 plan = planner.plan(self.goal_png, goal_name=_extract_goal_name(self.goal_png))
                 if plan:
+                    plan_obj = plan
                     (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))
                     plan_block = render_plan_block(plan, self.plan_format)
-                    print(f"[planner] BL plan ready: {len(plan.get('steps', []))} steps", flush=True)
+                    print(f"[planner] BL plan ready: {len(plan.get('steps', []))} steps "
+                          f"compositional={self.compositional}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"[planner] BL skipped ({type(exc).__name__}: {exc})", flush=True)
 
@@ -269,7 +307,7 @@ class BlenderAgentTrajectoryRunner:
         # near-black under Mesa software GL. Set once at launch; persists across
         # the agent's select_all/delete rebuilds (it's a space property).
         startup_py = None
-        if self.bright_viewport:
+        if self.bright_viewport or self.compositional:  # bright helps the build video
             startup_py = self.output_dir / "_bright_viewport.py"
             startup_py.write_text(_BRIGHT_VIEWPORT_SRC)
 
@@ -287,6 +325,15 @@ class BlenderAgentTrajectoryRunner:
             steps.append(TrajectoryStep(
                 step_idx=0, action_time=0.0, action=None, rationale=None,
             ))
+
+            # compositional_dynamics (Blender): deterministically replay the
+            # plan's per-component bpy steps, one python_eval each, so the video
+            # shows the asset built object-by-object.
+            if self.compositional and plan_obj and plan_obj.get("steps"):
+                terminated_by = self._run_compositional(
+                    plan_obj, executor, capture, shots_dir, steps, t0, json_path,
+                    video_path)
+                raise _CompositionalDone()
 
             for step_idx in range(1, self.max_steps + 1):
                 # Adaptive reasoning escalation: if the agent has gotten this
@@ -427,6 +474,8 @@ class BlenderAgentTrajectoryRunner:
                         break
 
             time.sleep(1.0)
+        except _CompositionalDone:
+            pass  # compositional replay finished; terminated_by already set
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"
             terminated_by = "error"
