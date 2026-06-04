@@ -142,6 +142,50 @@ Double-check every object has its own location.
 """
 
 
+# --- compositional mode -----------------------------------------------------
+# Appended to the system prompt when the build must be shown component-by-
+# component (for training videos). Each step's `code` becomes an individually
+# runnable, immediately-visible statement; the runner replays them one per turn.
+
+_COMPOSITIONAL_FC = """
+
+COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written):
+Each step builds and reveals exactly ONE elementary component, in sequence, so
+the construction is shown in fine gradation. The FreeCAD Python console keeps
+its namespace across steps, so:
+- Decompose the asset into its elementary components (e.g. a chair -> seat,
+  back, leg x4). One component per step.
+- step 1's `code` MUST initialise once:
+    import Part,FreeCAD as App; doc=App.ActiveDocument or App.newDocument(); [doc.removeObject(o.Name) for o in list(doc.Objects)]
+  then build component 1, ADD it, and recompute:
+    seat=Part.makeBox(W,D,t); seat.translate(App.Vector(x,y,z)); o=doc.addObject('Part::Feature','seat'); o.Shape=seat; doc.recompute()
+- every later step's `code` is a SELF-CONTAINED one-liner that creates its
+  component, positions it, adds it as its OWN named object, and recomputes
+  (reuse the persistent `doc`, `Part`, `App`):
+    leg_fl=Part.makeBox(a,b,h); leg_fl.translate(App.Vector(...)); o=doc.addObject('Part::Feature','leg_fl'); o.Shape=leg_fl; doc.recompute()
+- Keep components as SEPARATE named objects (do NOT fuse/compound them) so each
+  appears distinctly as it is added.
+- Every step's `code` must run on its own and make its component VISIBLE
+  (addObject + doc.recompute()). The union of all steps = the full asset, same
+  quality as a one-shot build.
+`full_code` should still be the concatenation of all steps (for reference).
+"""
+
+_COMPOSITIONAL_BL = """
+
+COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written):
+Each step builds and reveals exactly ONE elementary component, in sequence. The
+Blender console namespace persists across steps, so:
+- step 1's `code` clears the scene once:
+    import bpy; bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete()
+  then adds component 1 at its location (e.g. bpy.ops.mesh.primitive_cube_add(size=s, location=(x,y,z)); o=bpy.context.active_object; o.scale=(..); o.name='seat').
+- every later step's `code` is a self-contained one-liner that adds ONE object
+  at its own location (and scales/renames it). One component per step.
+- Do NOT add all objects in one step. The union of all steps = the full asset.
+`full_code` should still be the concatenation of all steps (for reference).
+"""
+
+
 def load_goal_metadata(goal_png: Path) -> dict[str, Any] | None:
     """Read the `<goal>.meta.json` sidecar next to the goal image."""
     sidecar = Path(str(goal_png)[: -len(goal_png.suffix)] + ".meta.json")
@@ -178,6 +222,7 @@ class FrontierPlanner:
                  app: str = "freecad",
                  image_max_dim: int = 1024, timeout: float = 240.0,
                  reasoning_effort: str = "low", max_tokens: int = 24000,
+                 compositional: bool = False,
                  referer: str = "https://cua-smoketest.local",
                  title: str = "cua-smoketest-planner"):
         if not api_key:
@@ -185,6 +230,10 @@ class FrontierPlanner:
         self.api_key = api_key
         self.model = model
         self.app = app
+        # compositional: each step's `code` must be an INDIVIDUALLY runnable +
+        # visible statement (adds one component to the doc + recomputes), so the
+        # runner can replay them one-per-turn for a fine-grained build video.
+        self.compositional = compositional
         self.image_max_dim = image_max_dim
         self.timeout = timeout
         # Gemini 3.x Pro is a heavy reasoner: at high effort it burned ~14k
@@ -213,6 +262,9 @@ class FrontierPlanner:
         user_blocks.append({"type": "text",
                             "text": "Output the BUILD_PLAN JSON now."})
         system = _PLANNER_SYSTEM_BL if self.app == "blender" else _PLANNER_SYSTEM
+        if self.compositional:
+            system += (_COMPOSITIONAL_BL if self.app == "blender"
+                       else _COMPOSITIONAL_FC)
         payload = {
             "model": self.model,
             "messages": [

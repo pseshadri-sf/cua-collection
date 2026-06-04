@@ -123,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="How the BUILD_PLAN is surfaced downstream: a ready "
                              "one-line python_eval reconstruction (default) or "
                              "per-step build_* primitive ops.")
+    parser.add_argument("--compositional", action="store_true",
+                        help="compositional_dynamics: replay the plan per-component "
+                             "(one python_eval each) for a fine-grained build video.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -164,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         escalate_to_effort=args.escalate_to_effort,
         planner_model=args.planner_model,
         plan_format=args.plan_format,
+        compositional=args.compositional,
         planner_reasoning=args.planner_reasoning,
     )
     result = runner.run()

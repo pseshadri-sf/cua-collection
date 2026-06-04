@@ -214,6 +214,10 @@ def _build_agent_state_hint(state: dict) -> str:
     return hint + "\n"
 
 
+class _CompositionalDone(Exception):
+    """Signals the compositional replay finished, to jump to run()'s teardown."""
+
+
 class AgentTrajectoryRunner:
     def __init__(self, *, goal_png: Path, output_dir: Path,
                  vlm: OpenRouterVLMClient,
@@ -236,7 +240,9 @@ class AgentTrajectoryRunner:
                  # rendering ("python_eval" default, or "build_star").
                  planner_model: str | None = None,
                  plan_format: str = "python_eval",
-                 planner_reasoning: str = "low"):
+                 planner_reasoning: str = "low",
+                 compositional: bool = False):
+        self.compositional = compositional
         self.planner_reasoning = planner_reasoning
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
@@ -259,6 +265,40 @@ class AgentTrajectoryRunner:
         self.escalate_to_effort = escalate_to_effort
         self.planner_model = planner_model
         self.plan_format = plan_format
+
+    def _run_compositional(self, plan, executor, capture, shots_dir, steps, t0,
+                           json_path, video_path):
+        """Deterministically replay the plan's per-component steps, one
+        python_eval each, capturing a frame after each so the trajectory + video
+        show the asset built component-by-component. Returns terminated_by."""
+        plan_steps = [s for s in plan.get("steps", []) if s.get("code")]
+        print(f"[compositional] replaying {len(plan_steps)} component steps", flush=True)
+        for i, st in enumerate(plan_steps, start=1):
+            self._write_json(json_path, steps, video_path=video_path,
+                             terminated_by="in_progress", error=None,
+                             model=self.vlm.model)
+            action = {"type": "python_eval", "code": st["code"]}
+            res = executor.execute(action)
+            time.sleep(max(res.post_action_sleep, self.post_action_delay))
+            # capture the cumulative state AFTER this component is added
+            png = shots_dir / f"step_{i:02d}_after.png"
+            shot = capture.capture(png.name)
+            if shot.path != png:
+                shot.path.rename(png)
+            steps.append(TrajectoryStep(
+                step_idx=i, action_time=time.monotonic() - t0,
+                action=action,
+                rationale=f"component {i}/{len(plan_steps)}: "
+                          f"{st.get('name','')} — {st.get('why','')}",
+                exec_error=res.error,
+            ))
+            time.sleep(1.0)  # video dwell so each component is clearly visible
+        steps.append(TrajectoryStep(
+            step_idx=len(plan_steps) + 1, action_time=time.monotonic() - t0,
+            action={"type": "terminate"},
+            rationale="all components built (compositional)",
+        ))
+        return "agent"
 
     def run(self) -> TrajectoryResult:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -324,19 +364,22 @@ class AgentTrajectoryRunner:
         # block injected as guidance every turn. Best-effort: on any failure the
         # plan_block stays empty and the SLM runs exactly as wave-9.1.
         plan_block = ""
+        plan_obj = None
         if self.planner_model:
             try:
                 planner = FrontierPlanner(
                     api_key=self.vlm.api_key, model=self.planner_model,
                     image_max_dim=self.vlm.image_max_dim,
-                    reasoning_effort=self.planner_reasoning)
+                    reasoning_effort=self.planner_reasoning,
+                    compositional=self.compositional)
                 plan = planner.plan(self.goal_png,
                                     goal_name=_extract_goal_name(self.goal_png))
                 if plan:
+                    plan_obj = plan
                     (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))
                     plan_block = render_plan_block(plan, self.plan_format)
                     print(f"[planner] plan ready: {len(plan.get('steps', []))} steps, "
-                          f"format={self.plan_format}", flush=True)
+                          f"format={self.plan_format} compositional={self.compositional}", flush=True)
             except Exception as exc:  # noqa: BLE001 — never block the run on planning
                 print(f"[planner] skipped ({type(exc).__name__}: {exc})", flush=True)
 
@@ -358,6 +401,16 @@ class AgentTrajectoryRunner:
                 step_idx=0, action_time=0.0,
                 action=None, rationale=None,
             ))
+
+            # compositional_dynamics: deterministically replay the plan's
+            # per-component steps (one python_eval each) so the trajectory +
+            # video show the asset built in fine gradation. Same end asset as a
+            # one-shot build; clean training data.
+            if self.compositional and plan_obj and plan_obj.get("steps"):
+                terminated_by = self._run_compositional(
+                    plan_obj, executor, capture, shots_dir, steps, t0, json_path,
+                    video_path)
+                raise _CompositionalDone()
 
             for step_idx in range(1, self.max_steps + 1):
                 # Adaptive reasoning escalation: if the agent has gotten this
@@ -542,6 +595,8 @@ class AgentTrajectoryRunner:
 
             # Give the last action ~1s of video tail so its consequence is visible.
             time.sleep(1.0)
+        except _CompositionalDone:
+            pass  # compositional replay finished; terminated_by already set
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"
             terminated_by = "error"
