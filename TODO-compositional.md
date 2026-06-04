@@ -53,3 +53,24 @@ matched one-shot exactly) — i.e. the chair/robot smoke type.
 2. Allow per-component booleans (a component MAY be a boolean of primitives,
    added as one visible object); only forbid fusing ACROSS components.
 3. Guard comps=0: if no per-step code, split full_code into statements or re-plan.
+
+## Two-stage decomposition — final results (wave-16/17)
+Stage1 = good full_code; Stage2 = LLM decomposes that build into visible steps.
+| | compositional | one-shot | Δ | multi-step |
+|---|---|---|---|---|
+| Blender | 93.2 | 94.1 | -0.9 (PARITY) | 25/25 |
+| FreeCAD (stage1 low)  | 64.5 | 75.1 | -10.6 | 20/25 |
+| FreeCAD (stage1 med)  | 65.5 | 75.1 | -9.6  | 21/25 |
+Cost $0.043/asset ($2.16/50), zero SLM.
+
+- BL: SOLVED — two-stage compositional at parity, all assets decompose, clean
+  fine-grained build videos. Robust framing + Start-page-to-front + force-visible
+  make every step visible.
+- FC: residual ~10pt loss. Stage-2 cannot faithfully reproduce FC's
+  boolean/compound/fillet (CSG) builds when split into per-step objects/features;
+  topology reorganizes -> fidelity loss. Single-solid feature sequences work
+  case-by-case (screw 82.7) but not uniformly. Stage-1 reasoning is NOT the
+  bottleneck (medium didn't help at scale).
+- Option for guaranteed FC parity: append the original full_code as a final
+  "snap" step so the END geometry == one-shot (video shows the process, final
+  frame is exact). Tradeoff: a clear+rebuild flicker at the end of the video.
