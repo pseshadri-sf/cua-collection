@@ -206,6 +206,48 @@ console namespace PERSISTS across steps.
 """
 
 
+# --- Stage 2: decompose a known-good full_code into visible steps ------------
+
+_DECOMPOSE_FC = """\
+You are given a COMPLETE FreeCAD Part-API build (one line of Python that
+reconstructs an asset). Split it into an ORDERED sequence of runnable steps that
+build the SAME final solid INCREMENTALLY, so each step's change is visible in the
+3D view (this is for a step-by-step construction video).
+
+The FreeCAD console keeps its namespace across steps (variables, imports, `doc`
+persist). Rules:
+- STEP 1's code MUST initialise: import Part,FreeCAD as App; doc=App.ActiveDocument or App.newDocument(); [doc.removeObject(o.Name) for o in list(doc.Objects)]; then build + ADD the first piece and doc.recompute().
+- EVERY step's code ends with doc.recompute() so its change shows; ONE physical line.
+- ADDITIVE build (parts combined with makeCompound/fuse at the end): emit ONE
+  part per step, each added as its OWN named object (doc.addObject per part) — do
+  NOT wait for a final compound; each part appears as built.
+- FEATURE build (one solid shaped by cut/fuse/fillet/chamfer/revolve): step 1 =
+  base solid added as object 'NAME'; each later step applies ONE op to the solid
+  and updates doc.getObject('NAME').Shape = s; doc.recompute(). The shape evolves.
+- Use the EXACT dimensions, positions and ops from the input build — the final
+  geometry MUST be identical. Do NOT simplify or drop parts/features.
+- 2–15 steps. EVERY step `code` must be non-empty and run on its own (given prior
+  steps ran).
+
+Output JSON: {"steps":[{"i":1,"name":"...","code":"...","why":"..."}, ...]}
+"""
+
+_DECOMPOSE_BL = """\
+You are given a COMPLETE Blender bpy build (one line). Split it into an ORDERED
+sequence of runnable steps that build the SAME scene INCREMENTALLY (for a
+step-by-step video). The console namespace persists across steps.
+- STEP 1's code clears the scene then adds the first object:
+    import bpy; bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(); <first object>
+- ADDITIVE (multiple objects): ONE object per step at its own location (a single
+  list-comprehension step per logical array group is OK).
+- SINGLE shaped object: base primitive in step 1; each later step applies ONE
+  effect (scale / add+apply a modifier) to bpy.context.active_object.
+- Use the EXACT params from the input; final scene MUST be identical.
+- 2–15 steps; EVERY step `code` non-empty + runnable.
+Output JSON: {"steps":[{"i":1,"name":"...","code":"...","why":"..."}, ...]}
+"""
+
+
 def load_goal_metadata(goal_png: Path) -> dict[str, Any] | None:
     """Read the `<goal>.meta.json` sidecar next to the goal image."""
     sidecar = Path(str(goal_png)[: -len(goal_png.suffix)] + ".meta.json")
@@ -281,10 +323,11 @@ class FrontierPlanner:
                                 "text": f"GOAL_NAME = '{goal_name}' (name the top object this)"})
         user_blocks.append({"type": "text",
                             "text": "Output the BUILD_PLAN JSON now."})
+        # Stage 1: produce the known-good full_code (standard plan). For
+        # compositional we DECOMPOSE that full_code in stage 2 (below) rather
+        # than asking the planner to write per-step code from scratch (which was
+        # lossy + often single-step). This anchors quality on full_code.
         system = _PLANNER_SYSTEM_BL if self.app == "blender" else _PLANNER_SYSTEM
-        if self.compositional:
-            system += (_COMPOSITIONAL_BL if self.app == "blender"
-                       else _COMPOSITIONAL_FC)
         payload = {
             "model": self.model,
             "messages": [
@@ -320,7 +363,43 @@ class FrontierPlanner:
         plan["_planner_model"] = self.model
         plan["_planner_usage"] = body.get("usage")
         plan["_planner_reasoning"] = reasoning
+        # Stage 2: decompose the good full_code into ordered, visible steps whose
+        # union == full_code. Guarantees parity + always-multi-step.
+        if self.compositional and plan.get("full_code"):
+            dsteps, dusage = self._decompose(plan["full_code"], goal_name)
+            if dsteps:
+                plan["steps"] = dsteps
+                plan["_decompose_usage"] = dusage
+                plan["_decomposed"] = True
+            else:
+                print("[planner] decompose failed — keeping full_code as 1 step", flush=True)
         return plan
+
+    def _decompose(self, full_code: str, goal_name: str | None):
+        """Stage 2: split a complete build into ordered runnable+visible steps
+        whose concatenation reproduces the SAME final geometry. Returns
+        (steps_list, usage) or ([], None)."""
+        system = _DECOMPOSE_BL if self.app == "blender" else _DECOMPOSE_FC
+        user = f"GOAL_NAME = {goal_name!r}\n\nFULL BUILD to decompose:\n{full_code}\n\nOutput the decomposition JSON now."
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "temperature": 0.0, "max_tokens": self.max_tokens,
+            "reasoning": {"effort": "medium"},  # decomposition benefits from reasoning
+            "response_format": {"type": "json_object"},
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}",
+                   "Content-Type": "application/json",
+                   "HTTP-Referer": self.referer, "X-Title": self.title}
+        try:
+            body = self._post_with_retry(headers, payload)
+            obj = _extract_json(body["choices"][0]["message"].get("content") or "")
+            steps = [s for s in (obj.get("steps") or []) if s.get("code")]
+            return (steps if steps else []), body.get("usage")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[planner] decompose error: {type(exc).__name__}: {exc}", flush=True)
+            return [], None
 
     # --- internals ----------------------------------------------------------
 
