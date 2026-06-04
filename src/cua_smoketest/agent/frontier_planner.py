@@ -149,40 +149,52 @@ Double-check every object has its own location.
 
 _COMPOSITIONAL_FC = """
 
-COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written):
-Each step builds and reveals exactly ONE elementary component, in sequence, so
-the construction is shown in fine gradation. The FreeCAD Python console keeps
-its namespace across steps, so:
-- Decompose the asset into its elementary components (e.g. a chair -> seat,
-  back, leg x4). One component per step.
-- step 1's `code` MUST initialise once:
-    import Part,FreeCAD as App; doc=App.ActiveDocument or App.newDocument(); [doc.removeObject(o.Name) for o in list(doc.Objects)]
-  then build component 1, ADD it, and recompute:
-    seat=Part.makeBox(W,D,t); seat.translate(App.Vector(x,y,z)); o=doc.addObject('Part::Feature','seat'); o.Shape=seat; doc.recompute()
-- every later step's `code` is a SELF-CONTAINED one-liner that creates its
-  component, positions it, adds it as its OWN named object, and recomputes
-  (reuse the persistent `doc`, `Part`, `App`):
-    leg_fl=Part.makeBox(a,b,h); leg_fl.translate(App.Vector(...)); o=doc.addObject('Part::Feature','leg_fl'); o.Shape=leg_fl; doc.recompute()
-- Keep components as SEPARATE named objects (do NOT fuse/compound them) so each
-  appears distinctly as it is added.
-- Every step's `code` must run on its own and make its component VISIBLE
-  (addObject + doc.recompute()). The union of all steps = the full asset, same
-  quality as a one-shot build.
-`full_code` should still be the concatenation of all steps (for reference).
+COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written).
+Show the build in FINE GRADATION: exactly one visible change per step. The
+FreeCAD console namespace PERSISTS across steps. Pick the decomposition by
+shape_class — and match the geometric fidelity of a one-shot build:
+
+(A) ASSEMBLY (multiple distinct parts, e.g. chair = seat + back + leg x4):
+    ONE component per step, each added as its OWN named object + recompute:
+      step 1: import Part,FreeCAD as App; doc=App.ActiveDocument or App.newDocument(); [doc.removeObject(o.Name) for o in list(doc.Objects)]; seat=Part.makeBox(W,D,t); seat.translate(App.Vector(x,y,z)); o=doc.addObject('Part::Feature','seat'); o.Shape=seat; doc.recompute()
+      step k: leg=Part.makeBox(a,b,h); leg.translate(App.Vector(...)); o=doc.addObject('Part::Feature','leg_k'); o.Shape=leg; doc.recompute()
+    A single component MAY itself be a boolean (e.g. panel.cut(hole)) added as
+    one object. Do NOT fuse ACROSS components — keep them separate.
+
+(B) SINGLE_SOLID / REVOLVE / BOOLEAN (one connected part, e.g. screw, pipe bend,
+    faucet): emit a FEATURE SEQUENCE — a base shape, then ordered effects, each
+    step MUTATING the same solid `s` and updating its object so the shape VISIBLY
+    EVOLVES (this is how you keep one-shot fidelity, not a coarse box):
+      step 1: import Part,FreeCAD as App; doc=App.ActiveDocument or App.newDocument(); [doc.removeObject(o.Name) for o in list(doc.Objects)]; s=Part.makeCylinder(r,h); o=doc.addObject('Part::Feature','NAME'); o.Shape=s; doc.recompute()
+      step 2 (add):    s=s.fuse(Part.makeCylinder(R,hd)); doc.getObject('NAME').Shape=s; doc.recompute()
+      step 3 (cut):    c=Part.makeBox(...); c.translate(App.Vector(...)); s=s.cut(c); doc.getObject('NAME').Shape=s; doc.recompute()
+      step 4 (fillet): s=s.makeFillet(rad,[s.Edges[i] for i in (0,1)]); doc.getObject('NAME').Shape=s; doc.recompute()
+    Use REAL feature ops: fuse / cut / common / makeFillet / makeChamfer /
+    makeRevolution. Same final solid as a one-shot build, just split into steps.
+
+Rules for ALL steps:
+- ONE physical line; reuse the persistent doc/Part/App; ALWAYS end with
+  doc.recompute() so the change is visible.
+- Produce 3–12 steps. NEVER produce zero steps. Every step's `code` must run on
+  its own (given prior steps already ran).
+- `full_code` = concatenation of all step codes (for reference).
 """
 
 _COMPOSITIONAL_BL = """
 
-COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written):
-Each step builds and reveals exactly ONE elementary component, in sequence. The
-Blender console namespace persists across steps, so:
-- step 1's `code` clears the scene once:
-    import bpy; bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete()
-  then adds component 1 at its location (e.g. bpy.ops.mesh.primitive_cube_add(size=s, location=(x,y,z)); o=bpy.context.active_object; o.scale=(..); o.name='seat').
-- every later step's `code` is a self-contained one-liner that adds ONE object
-  at its own location (and scales/renames it). One component per step.
-- Do NOT add all objects in one step. The union of all steps = the full asset.
-`full_code` should still be the concatenation of all steps (for reference).
+COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written).
+Show the build in FINE GRADATION: one visible change per step. The Blender
+console namespace PERSISTS across steps.
+- step 1's `code` clears the scene once, then adds the first object:
+    import bpy; bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(); bpy.ops.mesh.primitive_cube_add(size=s, location=(x,y,z)); o=bpy.context.active_object; o.scale=(..); o.name='base'
+- ASSEMBLY (multiple objects, e.g. table = top + leg x4 / arrays): one object per
+  step at its own location; later steps reuse the persistent namespace. For
+  arrays a single list-comprehension step that adds the whole row is acceptable.
+- SINGLE OBJECT with shaping (e.g. a beveled/boolean solid): step 1 adds the base
+  primitive; later steps apply ONE effect to bpy.context.active_object and APPLY
+  it (e.g. add+apply a Bevel or Boolean modifier with a cutter), so the shape
+  visibly evolves. A single plain primitive (sphere/monkey/torus) = ONE step.
+- NEVER produce zero steps. `full_code` = concatenation of all step codes.
 """
 
 

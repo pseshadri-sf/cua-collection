@@ -210,6 +210,9 @@ class BlenderAgentTrajectoryRunner:
         """Replay the plan's per-component bpy steps, one python_eval each, so
         the video shows the scene built object-by-object. Returns terminated_by."""
         plan_steps = [s for s in plan.get("steps", []) if s.get("code")]
+        if not plan_steps and plan.get("full_code"):
+            plan_steps = [{"code": plan["full_code"], "name": "full",
+                           "why": "full build (no per-step decomposition)"}]
         print(f"[compositional] BL replaying {len(plan_steps)} component steps", flush=True)
         for i, st in enumerate(plan_steps, start=1):
             self._write_json(json_path, steps, video_path=video_path,
