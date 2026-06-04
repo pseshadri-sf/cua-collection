@@ -364,6 +364,21 @@ class ActionExecutor:
         self._pg.click()
         return ExecutionResult(True, post_action_sleep=0.5)
 
+    def open_python_console(self) -> None:
+        """Open the FreeCAD Python console panel via the menu, ONCE. Sets
+        _console_opened so subsequent python_evals don't re-toggle (close) it.
+        Call at launch (after the GUI has settled) for max reliability."""
+        seq = MENU_PATHS.get(("View", "Panels", "Python console"))
+        if seq is not None:
+            for kind, x, y, delay in seq:
+                if kind == "click":
+                    self._pg.moveTo(x, y, duration=0.15); self._pg.click()
+                elif kind == "hover":
+                    self._pg.moveTo(x, y, duration=0.15)
+                time.sleep(delay)
+            time.sleep(0.5)
+        self._console_opened = True
+
     def _do_python_eval(self, a: dict) -> ExecutionResult:
         """Atomic: open console (idempotent) + focus input + type code + Enter
         + auto-fit viewport (Wave-8 item A) + execute frame_view keys (item B).
@@ -390,17 +405,12 @@ class ActionExecutor:
         if self._frame_path:
             typed += ";exec(open(r'%s').read())" % self._frame_path
         cx, cy = PYTHON_CONSOLE_INPUT_XY
-        # 1. Open the Python console (prior wave-17 behavior — re-attempt each
-        #    step; under Xvfb the close-hover often doesn't register so it stays
-        #    open, and re-attempting recovers if an open missed).
-        seq = MENU_PATHS.get(("View", "Panels", "Python console"))
-        if seq is not None:
-            for kind, x, y, delay in seq:
-                if kind == "click":
-                    self._pg.moveTo(x, y, duration=0.15); self._pg.click()
-                elif kind == "hover":
-                    self._pg.moveTo(x, y, duration=0.15)
-                time.sleep(delay)
+        # 1. Open the Python console exactly ONCE and keep it open. The menu item
+        #    TOGGLES the panel, so re-opening every step (old behavior) flipped it
+        #    closed on alternate steps -> multi-step compositional builds typed
+        #    into nothing (47% vs one-shot's 80-94%). Open once, never re-toggle.
+        if not self._console_opened:
+            self.open_python_console()
         # 2. Focus the console input (click it; harmless if already focused).
         self._pg.moveTo(cx, cy, duration=0.15)
         self._pg.click()
