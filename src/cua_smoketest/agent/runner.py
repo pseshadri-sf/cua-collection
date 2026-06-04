@@ -396,10 +396,13 @@ class AgentTrajectoryRunner:
             launch = freecad.launch(asset=None)
             time.sleep(self.freecad_post_launch_delay)
 
-            # Open the Python console ONCE here, with the GUI fully settled (more
-            # reliable than racing to open it on the first build step). It then
-            # stays open for every subsequent python_eval (no menu re-toggle).
-            executor.open_python_console()
+            # Open the Python console ONCE, after the GUI is FULLY settled. The
+            # menu-hover open misses if fired too early (one-shot worked ~85%
+            # because it opened ~15-35s post-launch, after a VLM call). Give the
+            # UI a generous settle, then open with a verify-and-retry so a single
+            # missed hover doesn't doom the whole multi-step build.
+            time.sleep(10.0)
+            executor.open_python_console(verify=True)
             time.sleep(0.5)
 
             # Start recording (this is T0; step 0's action_time is 0.0).

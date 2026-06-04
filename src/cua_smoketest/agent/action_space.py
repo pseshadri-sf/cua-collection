@@ -364,19 +364,51 @@ class ActionExecutor:
         self._pg.click()
         return ExecutionResult(True, post_action_sleep=0.5)
 
-    def open_python_console(self) -> None:
-        """Open the FreeCAD Python console panel via the menu, ONCE. Sets
-        _console_opened so subsequent python_evals don't re-toggle (close) it.
-        Call at launch (after the GUI has settled) for max reliability."""
+    def _nav_open_console(self) -> None:
         seq = MENU_PATHS.get(("View", "Panels", "Python console"))
-        if seq is not None:
-            for kind, x, y, delay in seq:
-                if kind == "click":
-                    self._pg.moveTo(x, y, duration=0.15); self._pg.click()
-                elif kind == "hover":
-                    self._pg.moveTo(x, y, duration=0.15)
-                time.sleep(delay)
-            time.sleep(0.5)
+        if seq is None:
+            return
+        for kind, x, y, delay in seq:
+            if kind == "click":
+                self._pg.moveTo(x, y, duration=0.15); self._pg.click()
+            elif kind == "hover":
+                self._pg.moveTo(x, y, duration=0.15)
+            time.sleep(delay)
+        time.sleep(0.5)
+
+    def open_python_console(self, verify: bool = False) -> None:
+        """Open the FreeCAD Python console once. With verify=True, confirm it's
+        actually open+focused by typing a command that writes a marker FILE and
+        checking the file appeared; retry the menu-open if not. This removes
+        dependence on a single flaky menu-hover (the #1 cause of empty builds)."""
+        cx, cy = PYTHON_CONSOLE_INPUT_XY
+        if not verify:
+            self._nav_open_console()
+            self._console_opened = True
+            return
+        marker = "/tmp/cua_console_ok_%d" % os.getpid()
+        for _attempt in range(4):
+            self._nav_open_console()
+            # focus the console input and run a marker-write command
+            try:
+                if os.path.exists(marker):
+                    os.remove(marker)
+            except OSError:
+                pass
+            self._pg.moveTo(cx, cy, duration=0.15); self._pg.click()
+            time.sleep(0.3)
+            self._pg.typewrite("open(r'%s','w').close()" % marker, interval=0.01)
+            time.sleep(0.15)
+            self._pg.press("enter")
+            time.sleep(0.6)
+            if os.path.exists(marker):  # console is genuinely open + executing
+                try:
+                    os.remove(marker)
+                except OSError:
+                    pass
+                self._console_opened = True
+                return
+        # give up after retries; mark opened so steps still attempt to type
         self._console_opened = True
 
     def _do_python_eval(self, a: dict) -> ExecutionResult:
