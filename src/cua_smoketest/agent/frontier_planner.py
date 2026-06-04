@@ -149,6 +149,10 @@ Double-check every object has its own location.
 
 _COMPOSITIONAL_FC = """
 
+CRITICAL OUTPUT RULE: in COMPOSITIONAL mode, `steps[].code` is THE thing that
+runs — it MUST be a non-empty, runnable one-liner for EVERY step. `full_code` is
+secondary/reference. A plan with any empty step `code` is INVALID and useless.
+
 COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written).
 Show the build in FINE GRADATION: exactly one visible change per step. The
 FreeCAD console namespace PERSISTS across steps. Pick the decomposition by
@@ -181,6 +185,10 @@ Rules for ALL steps:
 """
 
 _COMPOSITIONAL_BL = """
+
+CRITICAL OUTPUT RULE: in COMPOSITIONAL mode, `steps[].code` is THE thing that
+runs — it MUST be a non-empty, runnable one-liner for EVERY step. `full_code` is
+secondary. A plan with any empty step `code` is INVALID.
 
 COMPOSITIONAL MODE (IMPORTANT — overrides how `steps[].code` is written).
 Show the build in FINE GRADATION: one visible change per step. The Blender

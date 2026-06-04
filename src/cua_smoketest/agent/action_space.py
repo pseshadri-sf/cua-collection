@@ -323,9 +323,16 @@ class ActionExecutor:
         code = a.get("code")
         if not isinstance(code, str) or not code.strip():
             return ExecutionResult(False, "'python_eval' requires non-empty string 'code'")
-        # Wave-8 item A: append ViewFit via the Python console (deterministic,
-        # doesn't depend on viewport focus state).
-        code_with_fit = code.rstrip(" ;") + ";Gui.SendMsgToActiveView('ViewFit')"
+        # Frame the result ROBUSTLY and FOCUS-INDEPENDENTLY via the Gui API: set
+        # an isometric camera + fit-all, and force every object visible. The
+        # 0/v/f key presses below need viewport focus (not guaranteed after
+        # typing in the console), which is why thin/small assets sometimes never
+        # appear in the video. Doing it through Gui needs no focus.
+        _frame = (";import FreeCADGui as _G"
+                  ";[setattr(o.ViewObject,'Visibility',True) for o in (App.ActiveDocument.Objects if App.ActiveDocument else [])]"
+                  ";(_G.activeDocument() and _G.activeDocument().activeView().viewIsometric())"
+                  ";_G.SendMsgToActiveView('ViewFit')")
+        code_with_fit = code.rstrip(" ;") + _frame
         # 1. Open the Python console (idempotent).
         seq = MENU_PATHS.get(("View", "Panels", "Python console"))
         if seq is not None:
