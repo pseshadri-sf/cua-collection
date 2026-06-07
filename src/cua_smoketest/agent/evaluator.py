@@ -30,10 +30,29 @@ FREECAD_ASSETS_DIR = Path.home() / "cua_gui_smoketest" / "assets"
 BLENDER_ASSETS_DIR = Path.home() / "cua_blender_smoketest" / "assets"
 
 
+def _asset_from_sidecar(goal_png: Path) -> Path | None:
+    """If a `<goal_stem>.meta.json` sidecar exists and names a real source
+    asset, use it directly. Handles arbitrary goal naming (e.g. procured
+    FX_/BX_ atlases) where the regex resolvers below don't apply."""
+    for sc in (goal_png.with_suffix(".meta.json"),
+               goal_png.parent / (goal_png.stem + ".meta.json")):
+        if sc.exists():
+            try:
+                a = json.loads(sc.read_text()).get("asset")
+                if a and Path(a).exists():
+                    return Path(a)
+            except Exception:
+                pass
+    return None
+
+
 def resolve_freecad_goal_asset(goal_png: Path) -> Path | None:
     """Map a goal screenshot like `A_22_loaded_cylinder_step.png` back to
     its source asset under FREECAD_ASSETS_DIR (`cylinder.step`).
     """
+    hit = _asset_from_sidecar(goal_png)
+    if hit:
+        return hit
     name = goal_png.name
     m = re.match(r"^[A-Z]_\d+_loaded_(.+?)_(step|stp|fcstd|brep|iges|igs|stl)\.png$",
                  name, re.IGNORECASE)
@@ -65,6 +84,9 @@ def resolve_freecad_goal_asset(goal_png: Path) -> Path | None:
 
 def resolve_blender_goal_asset(goal_png: Path) -> Path | None:
     """Map e.g. `A_02_loaded_01_cube.png` -> `01_cube.blend`."""
+    hit = _asset_from_sidecar(goal_png)
+    if hit:
+        return hit
     name = goal_png.name
     m = re.match(r"^[A-Z]_\d+_loaded_(\d+_[a-z_0-9]+)\.png$", name, re.IGNORECASE)
     if not m:

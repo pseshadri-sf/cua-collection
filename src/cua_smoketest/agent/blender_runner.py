@@ -52,6 +52,45 @@ _apply()
 '''
 
 
+# Per-step framing: switch to the large Layout viewport and frame all geometry
+# so the built model fills the captured frame (python_eval leaves us in the
+# small Scripting viewport). Runs on a timer so the workspace switch + view_all
+# take effect after the console code returns, before the screenshot.
+_FRAME_BL_SRC = r'''
+import bpy as _bpy, mathutils as _mu, math as _math
+def _frame_bl():
+    _mn=[1e9]*3; _mx=[-1e9]*3
+    for _o in _bpy.data.objects:
+        if _o.type=='MESH' and _o.data:
+            for _v in _o.bound_box:
+                _w=_o.matrix_world @ _mu.Vector(_v)
+                for _i in range(3):
+                    if _w[_i]<_mn[_i]: _mn[_i]=_w[_i]
+                    if _w[_i]>_mx[_i]: _mx[_i]=_w[_i]
+    if _mn[0]>_mx[0]: return
+    _span=max(_mx[_i]-_mn[_i] for _i in range(3)) or 1.0
+    _ctr=_mu.Vector(((_mn[0]+_mx[0])/2,(_mn[1]+_mx[1])/2,(_mn[2]+_mx[2])/2))
+    _rot=_mu.Euler((_math.radians(60.0),0.0,_math.radians(45.0)),'XYZ').to_quaternion()
+    for _scr in _bpy.data.screens:
+        for _a in _scr.areas:
+            if _a.type!='VIEW_3D': continue
+            for _sp in _a.spaces:
+                if _sp.type!='VIEW_3D': continue
+                try:
+                    _rv=_sp.region_3d
+                    _rv.view_perspective='PERSP'
+                    _rv.view_location=_ctr
+                    _rv.view_distance=_span*2.2
+                    _rv.view_rotation=_rot
+                except Exception: pass
+                try: _a.tag_redraw()
+                except Exception: pass
+_frame_bl()
+try: _bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+except Exception: pass
+'''
+
+
 SYSTEM_PROMPT_TMPL = """You are an autonomous GUI agent controlling Blender 3.0 \
 on a Linux desktop (1920x1080) via pyautogui.
 
@@ -221,6 +260,16 @@ class BlenderAgentTrajectoryRunner:
             action = {"type": "python_eval", "code": st["code"]}
             res = executor.execute(action)
             time.sleep(max(res.post_action_sleep, self.post_action_delay))
+            # Bring the build into the large Layout viewport, framed, for the
+            # capture. Real input events (workspace cycle + Home) repaint
+            # reliably under Xvfb, unlike bpy property edits / redraw_timer.
+            try:
+                executor.execute({"type": "switch_workspace", "name": "Layout"})
+                time.sleep(0.4)
+                executor.execute({"type": "frame_all"})
+                time.sleep(0.5)
+            except Exception:
+                pass
             png = shots_dir / f"step_{i:02d}_after.png"
             shot = capture.capture(png.name)
             if shot.path != png:
