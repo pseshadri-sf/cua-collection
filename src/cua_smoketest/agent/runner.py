@@ -241,8 +241,10 @@ class AgentTrajectoryRunner:
                  planner_model: str | None = None,
                  plan_format: str = "python_eval",
                  planner_reasoning: str = "low",
-                 compositional: bool = False):
+                 compositional: bool = False,
+                 postprocess: bool = False):
         self.compositional = compositional
+        self.postprocess = postprocess
         self.planner_reasoning = planner_reasoning
         self.goal_png = Path(goal_png).resolve()
         self.output_dir = Path(output_dir).resolve()
@@ -634,6 +636,17 @@ class AgentTrajectoryRunner:
         self._write_json(json_path, steps, video_path=video_path,
                          terminated_by=terminated_by, error=error,
                          model=self.vlm.model)
+        if self.postprocess:
+            try:
+                from .postprocess import postprocess_trajectory
+                m = postprocess_trajectory(self.output_dir, "freecad")
+                if m:
+                    print(f"[postprocess] video_clean.mp4: {m['n_code_blocks']} blocks, "
+                          f"{m['clean_duration_s']}s", flush=True)
+                else:
+                    print("[postprocess] skipped (no timed code steps / no video)", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[postprocess] failed: {type(exc).__name__}: {exc}", flush=True)
         return TrajectoryResult(
             video_path=video_path, json_path=json_path,
             goal_path=self.goal_png, steps=steps,

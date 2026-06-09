@@ -126,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compositional", action="store_true",
                         help="compositional_dynamics: replay the plan per-component "
                              "(one python_eval each) for a fine-grained build video.")
+    parser.add_argument("--best-of-both", action="store_true",
+                        help="(Blender only; accepted+ignored on FreeCAD for arg-compat.)")
+    parser.add_argument("--postprocess", action="store_true",
+                        help="After the run, emit video_clean.mp4 — viewfinder-only, code-entry/GUI "
+                             "actions cut, with recalibrated per-code-block timestamps + reasoning.")
     args = parser.parse_args(argv)
 
     # Load API key: env file overrides process env only if not already set.
@@ -169,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         plan_format=args.plan_format,
         compositional=args.compositional,
         planner_reasoning=args.planner_reasoning,
+        postprocess=args.postprocess,
     )
     result = runner.run()
 
