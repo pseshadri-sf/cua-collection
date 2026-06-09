@@ -236,9 +236,11 @@ class BlenderAgentTrajectoryRunner:
                  bright_viewport: bool = False,
                  planner_reasoning: str = "low",
                  compositional: bool = False,
-                 best_of_both: bool = False):
+                 best_of_both: bool = False,
+                 postprocess: bool = False):
         self.compositional = compositional
         self.best_of_both = best_of_both
+        self.postprocess = postprocess
         self.planner_reasoning = planner_reasoning
         self.bright_viewport = bright_viewport
         self.goal_png = Path(goal_png).resolve()
@@ -574,6 +576,17 @@ class BlenderAgentTrajectoryRunner:
         self._write_json(json_path, steps, video_path=video_path,
                          terminated_by=terminated_by, error=error,
                          model=self.vlm.model)
+        if self.postprocess:
+            try:
+                from .postprocess import postprocess_trajectory
+                m = postprocess_trajectory(self.output_dir, "blender")
+                if m:
+                    print(f"[postprocess] video_clean.mp4: {m['n_code_blocks']} blocks, "
+                          f"{m['clean_duration_s']}s", flush=True)
+                else:
+                    print("[postprocess] skipped (no timed code steps / no video)", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[postprocess] failed: {type(exc).__name__}: {exc}", flush=True)
         return TrajectoryResult(
             video_path=video_path, json_path=json_path,
             goal_path=self.goal_png, steps=steps,

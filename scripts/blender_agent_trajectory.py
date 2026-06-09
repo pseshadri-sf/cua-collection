@@ -90,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--best-of-both", action="store_true",
                         help="Generate a primitive-biased AND an enhanced-biased plan, score each "
                              "by headless Chamfer vs the goal asset, keep the better (Blender only).")
+    parser.add_argument("--postprocess", action="store_true",
+                        help="After the run, emit video_clean.mp4 — viewfinder-only, code-entry/GUI "
+                             "actions cut, with recalibrated per-code-block timestamps + reasoning.")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -132,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         planner_reasoning=args.planner_reasoning,
         compositional=args.compositional,
         best_of_both=args.best_of_both,
+        postprocess=args.postprocess,
         bright_viewport=args.bright_viewport,
     )
     result = runner.run()
