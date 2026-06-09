@@ -29,6 +29,20 @@ from .runner import _CompositionalDone
 # SOLID shading on a dark background so geometry is clearly visible under Mesa
 # software GL (default studio+grey shading renders near-black). Wrapped in a
 # timer so it runs after the UI is fully built.
+def _resolve_goal_asset(goal_png: Path) -> str | None:
+    """Source asset path from the goal's `<stem>.meta.json` sidecar (for scoring)."""
+    for sc in (goal_png.with_suffix(".meta.json"),
+               goal_png.parent / (goal_png.stem + ".meta.json")):
+        if sc.exists():
+            try:
+                a = json.loads(sc.read_text()).get("asset")
+                if a and Path(a).exists():
+                    return a
+            except Exception:
+                pass
+    return None
+
+
 _BRIGHT_VIEWPORT_SRC = '''\
 import bpy
 def _apply():
@@ -221,8 +235,10 @@ class BlenderAgentTrajectoryRunner:
                  plan_format: str = "python_eval",
                  bright_viewport: bool = False,
                  planner_reasoning: str = "low",
-                 compositional: bool = False):
+                 compositional: bool = False,
+                 best_of_both: bool = False):
         self.compositional = compositional
+        self.best_of_both = best_of_both
         self.planner_reasoning = planner_reasoning
         self.bright_viewport = bright_viewport
         self.goal_png = Path(goal_png).resolve()
@@ -343,7 +359,13 @@ class BlenderAgentTrajectoryRunner:
                                           image_max_dim=self.vlm.image_max_dim,
                                           reasoning_effort=self.planner_reasoning,
                                           compositional=self.compositional)
-                plan = planner.plan(self.goal_png, goal_name=_extract_goal_name(self.goal_png))
+                gname = _extract_goal_name(self.goal_png)
+                if self.best_of_both:
+                    goal_asset = _resolve_goal_asset(self.goal_png)
+                    plan = planner.plan_best_of(self.goal_png, goal_name=gname,
+                                                goal_asset=goal_asset, blender_bin=blender_bin)
+                else:
+                    plan = planner.plan(self.goal_png, goal_name=gname)
                 if plan:
                     plan_obj = plan
                     (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))

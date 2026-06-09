@@ -87,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Force a flat/bright SOLID viewport so the agent + screenshots\n                             can see built geometry (default renders near-black under SW GL).")
     parser.add_argument("--compositional", action="store_true",
                         help="compositional_dynamics: replay plan per-component (one python_eval each).")
+    parser.add_argument("--best-of-both", action="store_true",
+                        help="Generate a primitive-biased AND an enhanced-biased plan, score each "
+                             "by headless Chamfer vs the goal asset, keep the better (Blender only).")
     args = parser.parse_args(argv)
 
     if args.env_file:
@@ -128,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         plan_format=args.plan_format,
         planner_reasoning=args.planner_reasoning,
         compositional=args.compositional,
+        best_of_both=args.best_of_both,
         bright_viewport=args.bright_viewport,
     )
     result = runner.run()

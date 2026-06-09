@@ -21,12 +21,38 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+_CHAMFER_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "plan_chamfer_score.py"
+
+
+def _score_candidate(full_code: str, goal_asset: str, blender_bin: str,
+                     timeout: float = 200.0) -> float | None:
+    """Headless Chamfer score (0-100) of a candidate build vs the goal asset.
+    Returns None if scoring could not run (caller treats as lowest priority)."""
+    if not _CHAMFER_SCRIPT.exists():
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cf = os.path.join(td, "chunks.json")
+            out = os.path.join(td, "out.json")
+            json.dump([full_code], open(cf, "w"))
+            env = {**os.environ, "CH_GOAL": goal_asset, "CH_CHUNKS": cf, "CH_OUT": out}
+            subprocess.run([blender_bin, "-b", "-noaudio", "-P", str(_CHAMFER_SCRIPT)],
+                           env=env, capture_output=True, timeout=timeout)
+            if os.path.exists(out):
+                return json.load(open(out)).get("score")
+    except Exception:
+        return None
+    return None
 
 _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 # The Gemini 3 Pro-tier model currently served on OpenRouter is the 3.1 Pro
@@ -341,9 +367,11 @@ class FrontierPlanner:
 
     # --- public API ---------------------------------------------------------
 
-    def plan(self, goal_png: Path, goal_name: str | None = None) -> dict[str, Any] | None:
-        """Produce a BUILD_PLAN for the goal. Returns the validated plan dict, or
-        None if planning failed (caller falls back to plain SLM execution)."""
+    def _plan_once(self, goal_png: Path, goal_name: str | None = None,
+                   style_hint: str = "") -> dict[str, Any] | None:
+        """Stage 1 only: produce a validated BUILD_PLAN with full_code (no
+        decompose). `style_hint` is an extra directive appended to the user
+        prompt (used by best-of-both to bias primitive vs enhanced builds)."""
         meta = load_goal_metadata(goal_png) or {}
         user_blocks: list[dict[str, Any]] = [
             {"type": "text", "text": "GOAL views:"},
@@ -353,12 +381,10 @@ class FrontierPlanner:
         if goal_name:
             user_blocks.append({"type": "text",
                                 "text": f"GOAL_NAME = '{goal_name}' (name the top object this)"})
+        if style_hint:
+            user_blocks.append({"type": "text", "text": style_hint})
         user_blocks.append({"type": "text",
                             "text": "Output the BUILD_PLAN JSON now."})
-        # Stage 1: produce the known-good full_code (standard plan). For
-        # compositional we DECOMPOSE that full_code in stage 2 (below) rather
-        # than asking the planner to write per-step code from scratch (which was
-        # lossy + often single-step). This anchors quality on full_code.
         system = _PLANNER_SYSTEM_BL if self.app == "blender" else _PLANNER_SYSTEM
         payload = {
             "model": self.model,
@@ -390,13 +416,14 @@ class FrontierPlanner:
             print(f"[planner] invalid plan schema: {str(plan)[:200]}", flush=True)
             return None
         # Stash planner provenance so the runner persists it in build_plan.json:
-        # usage/cost (for the cost ablation) + the reasoning trace (for audit /
-        # understanding WHY the planner decomposed the asset the way it did).
+        # usage/cost (for the cost ablation) + the reasoning trace (for audit).
         plan["_planner_model"] = self.model
         plan["_planner_usage"] = body.get("usage")
         plan["_planner_reasoning"] = reasoning
-        # Stage 2: decompose the good full_code into ordered, visible steps whose
-        # union == full_code. Guarantees parity + always-multi-step.
+        return plan
+
+    def _decompose_into(self, plan: dict[str, Any], goal_name: str | None) -> dict[str, Any]:
+        """Stage 2: decompose plan.full_code into ordered visible steps in-place."""
         if self.compositional and plan.get("full_code"):
             dsteps, dusage = self._decompose(plan["full_code"], goal_name)
             if dsteps:
@@ -406,6 +433,59 @@ class FrontierPlanner:
             else:
                 print("[planner] decompose failed — keeping full_code as 1 step", flush=True)
         return plan
+
+    def plan(self, goal_png: Path, goal_name: str | None = None) -> dict[str, Any] | None:
+        """Produce a BUILD_PLAN for the goal (stage 1 + stage-2 decompose when
+        compositional). Returns the validated plan dict, or None on failure."""
+        plan = self._plan_once(goal_png, goal_name)
+        if plan is None:
+            return None
+        return self._decompose_into(plan, goal_name)
+
+    # Best-of-both: generate a primitive-biased AND an enhanced-biased candidate,
+    # score each by headless Chamfer vs the goal asset, keep the better. Captures
+    # the enhanced toolkit's wins (organic/vessel) without its losses on shapes a
+    # clean primitive build already nails. Falls back to the primitive candidate
+    # when scoring is inconclusive (never worse than the proven baseline).
+    _BOB_HINTS = [
+        ("primitive",
+         "STYLE CONSTRAINT: Use ONLY clean primitives placed and scaled to the goal "
+         "(cube/cylinder/uv_sphere/cone/torus + scale + array comprehensions). Do NOT "
+         "use SUBSURF/SCREW/SOLIDIFY/BEVEL/MIRROR/BOOLEAN/curves/bmesh. Prefer the "
+         "simplest correct construction at the GOAL bbox scale."),
+        ("enhanced",
+         "STYLE CONSTRAINT: Use the ENHANCE FIDELITY toolkit (SUBSURF/SCREW/SOLIDIFY/"
+         "BEVEL/MIRROR/curves) wherever the FORM clearly benefits, applying every "
+         "modifier, at the GOAL bbox scale."),
+    ]
+
+    def plan_best_of(self, goal_png: Path, goal_name: str | None = None,
+                     goal_asset: str | None = None, blender_bin: str | None = None,
+                     candidates: int = 2) -> dict[str, Any] | None:
+        """Generate `candidates` style-biased plans, score each by Chamfer vs the
+        goal asset, decompose + return the winner. Needs goal_asset + blender_bin
+        to score; if unavailable, falls back to plain plan()."""
+        if self.app != "blender" or not goal_asset or not blender_bin or not Path(goal_asset).exists():
+            return self.plan(goal_png, goal_name)
+        hints = self._BOB_HINTS[:max(1, candidates)]
+        cands = []
+        for label, hint in hints:
+            p = self._plan_once(goal_png, goal_name, style_hint=hint)
+            if p and p.get("full_code"):
+                sc = _score_candidate(p["full_code"], goal_asset, blender_bin)
+                cands.append((label, sc, p))
+                print(f"[best-of-both] candidate '{label}' chamfer={sc}", flush=True)
+        if not cands:
+            return self.plan(goal_png, goal_name)
+        # pick highest score; tie/None-safe; on equal scores prefer 'primitive'
+        order = {"primitive": 0, "enhanced": 1}
+        cands.sort(key=lambda t: (-(t[1] or 0.0), order.get(t[0], 9)))
+        win_label, win_score, win = cands[0]
+        win["_bob_winner"] = win_label
+        win["_bob_scores"] = {l: s for l, s, _ in cands}
+        print(f"[best-of-both] winner='{win_label}' (score={win_score}) "
+              f"of {[(l, s) for l, s, _ in cands]}", flush=True)
+        return self._decompose_into(win, goal_name)
 
     def _decompose(self, full_code: str, goal_name: str | None):
         """Stage 2: split a complete build into ordered runnable+visible steps
