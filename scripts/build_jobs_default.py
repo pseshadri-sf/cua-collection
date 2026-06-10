@@ -17,7 +17,7 @@ FC_PLANNER = "google/gemini-3.1-flash-lite-preview"
 BL_PLANNER = "google/gemini-3.1-pro-preview"
 # KiCad: PCBSchemaGen shows Flash >= Pro on PCB code-gen; flash (not flash-lite)
 # for the spatial placement. A/B vs pro in M5 before locking (SPEC §9).
-KICAD_PLANNER = "google/gemini-3.1-flash-preview"
+KICAD_PLANNER = "google/gemini-3-flash-preview"
 EXECUTOR = "qwen/qwen3-vl-30b-a3b-instruct"
 
 
