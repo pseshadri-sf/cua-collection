@@ -31,15 +31,15 @@ from pathlib import Path
 _CROP = {
     "freecad": (320, 110, 1575, 600),   # FreeCAD 3D view (excl. tree/toolbar/console)
     "blender": (80, 92, 1410, 878),     # Blender Layout 3D viewport (excl. panels/header/timeline)
-    "kicad":   (220, 95, 1480, 820),    # pcbnew PCB canvas (excl. layers panel/toolbar/status) — M1-tuned
+    "kicad":   (345, 130, 1295, 890),   # pcbnew canvas only (excl. left/right panels, toolbars, status) — the console is parked off-screen
 }
 # Keep-window around each step's settled `action_time`: (pre, post) seconds.
 _WINDOW = {
     "freecad": (1.2, 0.8),
     "blender": (0.5, 1.2),
-    # KiCad keeps the canvas visible throughout (console is a separate panel),
-    # so use the wider FreeCAD-style window.
-    "kicad":   (1.2, 0.8),
+    # KiCad compositional build dwells ~1.2s before recording action_time and
+    # ~1.0s after; the console is off-screen, so both sides are clean canvas.
+    "kicad":   (1.0, 1.0),
 }
 
 

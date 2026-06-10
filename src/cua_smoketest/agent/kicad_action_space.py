@@ -49,14 +49,15 @@ TOOLS_MENU_XY: tuple[int, int] = (318, 31)        # Tools in the menubar
 SCRIPTING_CONSOLE_ITEM_XY: tuple[int, int] = (382, 438)  # Tools > Scripting Console
 
 # The pcbnew Scripting Console is a FLOATING wxPython PyShell window titled
-# "KiPython" (NOT a docked panel). After opening it we move+resize it to a fixed
-# rect so the shell-click point is stable; the PyShell prompt is reached with
-# Ctrl+End (the startup banner scrolls it out of view). (M0 finding.)
+# "KiPython" (NOT a docked panel). For a clean "viewfinder" video — the code +
+# console OUT of frame, like the FreeCAD docked-console crop — we keep the
+# console PERMANENTLY OFF-SCREEN and type into it "blind": window-activate it
+# (grants keyboard focus regardless of position) and send keys via XTEST, which
+# go to the focused window. The canvas is therefore never obscured. (Validated.)
 CONSOLE_WINDOW_NAME = "KiPython"
-CONSOLE_RECT: tuple[int, int, int, int] = (560, 420, 800, 620)  # x, y, w, h
-# Click point inside the shell text pane (upper area), then Ctrl+End -> prompt.
-SHELL_CLICK_XY: tuple[int, int] = (CONSOLE_RECT[0] + CONSOLE_RECT[2] // 2,
-                                   CONSOLE_RECT[1] + 90)
+CONSOLE_SIZE: tuple[int, int] = (700, 450)
+# Just past the right edge of the 1920-wide screen -> fully off-screen.
+CONSOLE_OFFSCREEN_XY: tuple[int, int] = (1925, 150)
 
 
 # Authoritative human-readable spec embedded in the system prompt.
@@ -293,13 +294,13 @@ class KiCadActionExecutor:
         return ids[-1] if ids else None
 
     def _place_console(self, wid: str) -> None:
-        """Move+resize+activate the floating console to CONSOLE_RECT so the
-        shell-click point is stable across runs."""
-        x, y, w, h = CONSOLE_RECT
-        self._xdo("windowmove", wid, str(x), str(y))
+        """Park the floating console OFF-SCREEN (so it never covers the canvas in
+        the captured video). We type into it later via window-activate + XTEST."""
+        w, h = CONSOLE_SIZE
+        ox, oy = CONSOLE_OFFSCREEN_XY
         self._xdo("windowsize", wid, str(w), str(h))
-        self._xdo("windowactivate", "--sync", wid)
-        time.sleep(0.6)
+        self._xdo("windowmove", wid, str(ox), str(oy))
+        time.sleep(0.4)
 
     def open_scripting_console(self, verify: bool = False) -> None:
         """Open the pcbnew Scripting Console (Tools>Scripting Console), then
@@ -343,12 +344,15 @@ class KiCadActionExecutor:
         self._console_opened = True  # give up; steps still attempt to type
 
     def _submit_to_shell(self, line: str) -> None:
-        """Focus the KiPython shell, jump to the prompt (Ctrl+End — the startup
-        banner scrolls it out of view), type one line, Enter."""
-        sx, sy = SHELL_CLICK_XY
-        self._pg.moveTo(sx, sy, duration=0.15)
-        self._pg.click()
-        time.sleep(0.3)
+        """Run one line in the OFF-SCREEN KiPython shell: window-activate it to
+        grant keyboard focus (works off-screen), Ctrl+End to reach the prompt
+        (past the startup banner), type via XTEST (delivered to the focused
+        window regardless of position), Enter. No click — the console is
+        off-screen, so the canvas is never obscured."""
+        wid = self._find_console_window()
+        if wid:
+            self._xdo("windowactivate", "--sync", wid)
+            time.sleep(0.4)
         self._pg.hotkey("ctrl", "end")
         time.sleep(0.2)
         self._pg.typewrite(line, interval=0.008)

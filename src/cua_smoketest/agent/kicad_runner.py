@@ -124,6 +124,40 @@ except Exception:
 '''
 
 
+def _split_pcbnew_full_code(full_code: str, target_steps: int = 10) -> list[dict] | None:
+    """Deterministically split a P()-helper full_code build into visible steps so
+    the board builds batch-by-batch on the canvas (the LLM compositional decompose
+    is unreliable on high-footprint boards). The console namespace persists across
+    pcbnew_eval submissions, so step 1 defines the helpers + draws the outline and
+    later steps just call P(...). Returns None if the build isn't P()-based.
+
+    Step 1   = setup (imports, clear, def P, def OUT, OUT(w,h)) -> empty outlined board.
+    Step k>1 = a batch of P(...) footprint-placement calls; the last batch also
+               carries any trailing statements (nets/tracks/Refresh)."""
+    import math
+    import re as _re
+    lines = full_code.split("\n")
+    p_idx = [i for i, ln in enumerate(lines) if _re.match(r"\s*P\(", ln)]
+    if len(p_idx) < 2:
+        return None  # not a P()-helper build — caller falls back
+    first_p, last_p = p_idx[0], p_idx[-1]
+    setup = lines[:first_p]
+    pcalls = [lines[i] for i in p_idx]
+    tail = [lines[i] for i in range(last_p + 1, len(lines)) if lines[i].strip()]
+    batch = max(3, math.ceil(len(pcalls) / max(1, target_steps - 1)))
+    steps = [{"code": "\n".join(setup), "name": "setup + outline",
+              "why": "define helpers, clear board, draw outline"}]
+    for k in range(0, len(pcalls), batch):
+        chunk = pcalls[k:k + batch]
+        last = (k + batch) >= len(pcalls)
+        steps.append({
+            "code": "\n".join(chunk + (tail if last else [])),
+            "name": f"footprints {k + 1}-{k + len(chunk)}",
+            "why": f"place {len(chunk)} footprints",
+        })
+    return steps
+
+
 def _build_kicad_state_hint(state: dict) -> str:
     """Turn a pcbnew probe readout into an AGENT_STATE block (+ stacking repair
     recipe when footprints cluster at one point). Returns '' if not useful."""
@@ -217,13 +251,22 @@ class KiCadAgentTrajectoryRunner:
 
     def _run_compositional(self, plan, executor, capture, shots_dir, steps, t0,
                            json_path, video_path):
-        """Replay the plan's per-component pcbnew steps, one pcbnew_eval each, so
-        the video shows the board built piece-by-piece. Returns terminated_by."""
-        plan_steps = [s for s in plan.get("steps", []) if s.get("code")]
-        if not plan_steps and plan.get("full_code"):
-            plan_steps = [{"code": plan["full_code"], "name": "full",
+        """Build the board batch-by-batch via the off-screen console so the video
+        is a clean viewfinder of the asset appearing step-by-step. Prefer a
+        DETERMINISTIC split of full_code (helper + P() batches) over the unreliable
+        LLM decompose, which collapsed high-footprint boards to one block. Returns
+        terminated_by."""
+        plan_steps = None
+        fc = plan.get("full_code")
+        if fc:
+            plan_steps = _split_pcbnew_full_code(fc, target_steps=10)
+        if not plan_steps:
+            plan_steps = [s for s in plan.get("steps", []) if s.get("code")]
+        if not plan_steps and fc:
+            plan_steps = [{"code": fc, "name": "full",
                            "why": "full build (no per-step decomposition)"}]
-        print(f"[compositional] KiCad replaying {len(plan_steps)} component steps", flush=True)
+        print(f"[compositional] KiCad replaying {len(plan_steps)} component steps "
+              f"(off-screen console, deterministic split)", flush=True)
         for i, st in enumerate(plan_steps, start=1):
             self._write_json(json_path, steps, video_path=video_path,
                              terminated_by="in_progress", error=None,
@@ -231,17 +274,25 @@ class KiCadAgentTrajectoryRunner:
             action = {"type": "pcbnew_eval", "code": st["code"]}
             res = executor.execute(action)
             time.sleep(max(res.post_action_sleep, self.post_action_delay))
+            # Zoom-fit the (console-free) canvas, then DWELL so the postprocess
+            # window captures a clean, settled frame of the new board state.
+            try:
+                executor.execute({"type": "frame_view"})
+            except Exception:
+                pass
+            time.sleep(1.2)
             png = shots_dir / f"step_{i:02d}_after.png"
             shot = capture.capture(png.name)
             if shot.path != png:
                 shot.path.rename(png)
+            # Record action_time at this settled, console-free moment.
             steps.append(TrajectoryStep(
                 step_idx=i, action_time=time.monotonic() - t0, action=action,
                 rationale=f"component {i}/{len(plan_steps)}: "
                           f"{st.get('name','')} — {st.get('why','')}",
                 exec_error=res.error,
             ))
-            time.sleep(1.0)
+            time.sleep(1.0)  # video tail so the new state lingers on screen
         steps.append(TrajectoryStep(
             step_idx=len(plan_steps) + 1, action_time=time.monotonic() - t0,
             action={"type": "terminate"},
