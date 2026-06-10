@@ -193,6 +193,65 @@ The `full_code` MUST run as-is, match the GOAL bbox scale, and APPLY every
 modifier. Prefer the simplest construction that matches the goal.
 """
 
+# KiCad variant: PCB layout reconstruction for the pcbnew SWIG API. Mirrors the
+# FreeCAD planner's conventions (mm units, reuse-and-clear the live document for
+# idempotency, explicit per-part placement) since KiCad's scripting model is the
+# closest analogue. full_code is one-line pcbnew that reuses the open board.
+_PLANNER_SYSTEM_KICAD = """\
+You are an expert PCB-layout reconstruction PLANNER for the KiCad pcbnew SWIG
+API. You are given a GOAL image (rendered views of a target PCB: top copper,
+silkscreen, 3D) plus pre-computed GOAL_METADATA. Produce a complete build PLAN
+that a less-capable executor agent will follow to recreate the board in pcbnew.
+
+CONVENTIONS (follow exactly):
+- Units are millimetres; ALWAYS wrap with pcbnew.FromMM(...) and positions with
+  pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y)). Raw ints are nanometres.
+- TRUST GOAL_METADATA (board outline, footprint count, net count, layer count,
+  per-footprint ref/position/orientation) over your own estimates from the
+  image; note any disagreement in `brief`.
+- Parameters-first: put key dimensions/counts in `parameters`, then reference them.
+- BUILD ORDER: board outline (PCB_SHAPE on Edge.Cuts) -> place footprints ->
+  add nets -> route tracks (PCB_TRACK) -> pour zones (ZONE).
+- POSITION EVERY FOOTPRINT EXPLICITLY with SetPosition(...). Footprints left at
+  (0,0) stack into one pile — the #1 failure mode this plan exists to prevent.
+  Use the per-footprint positions from GOAL_METADATA.
+- Reference layers by name via board.GetLayerID('F.Cu'|'B.Cu'|'Edge.Cuts'); set a
+  track/zone net via board.FindNet(name).
+- Name top-level nets using the goal's net names when provided.
+
+OUTPUT: a single JSON object, no prose outside it, matching this schema:
+{
+  "brief": "<2-4 sentences: what the board is, overall size (state the outline
+            bbox in mm), footprint breakdown, net/layer counts, key assumptions>",
+  "shape_class": "pcb_layout",
+  "parameters": { "<name>": <number>, ... },
+  "conventions": { "units": "mm", "origin": "<e.g. board top-left>", "layers": <int> },
+  "steps": [
+    { "i": 1, "name": "<outline|R1|track_GND|zone_GND|...>",
+      "op": "set_board_outline"|"place_footprint"|"route_track"|"add_via"|
+            "add_zone"|"add_net",
+      "at": [x_mm, y_mm], "rot": <deg>, "layer": "<F.Cu|B.Cu|Edge.Cuts>",
+      "why": "<short>" },
+    ...
+  ],
+  "full_code": "<ONE-LINE, semicolon-joined, console-ready pcbnew that
+      reconstructs the ENTIRE board. It MUST be IDEMPOTENT — re-running it must
+      NOT duplicate items. Start by reusing+clearing the open board:
+      import pcbnew; b=pcbnew.GetBoard(); [b.Remove(x) for x in list(b.GetFootprints())];
+      [b.Remove(t) for t in list(b.GetTracks())]; <draw outline; place+position
+      every footprint; add nets; route; pour>; pcbnew.Refresh() — NEVER open a
+      new board; NO newlines, NO def/for-loops that span lines>",
+  "validation_targets": { "footprint_count": <int>, "net_count": <int>,
+                          "layer_count": <int>, "outline_bbox_mm": [w, h] },
+  "fallback": "<simplest acceptable approximation: outline + footprints placed,
+               no routing + est. score>"
+}
+
+The `full_code` MUST be valid one-line Python that runs in the pcbnew Scripting
+Console as-is. Translate each footprint placement to its own statement; never
+leave a footprint at the origin. Double-check every footprint has a SetPosition.
+"""
+
 
 # --- compositional mode -----------------------------------------------------
 # Appended to the system prompt when the build must be shown component-by-
@@ -305,6 +364,25 @@ step-by-step video). The console namespace persists across steps.
 Output JSON: {"steps":[{"i":1,"name":"...","code":"...","why":"..."}, ...]}
 """
 
+_DECOMPOSE_KICAD = """\
+You are given a COMPLETE KiCad pcbnew build (one line of Python that reconstructs
+a board). Split it into an ORDERED sequence of runnable steps that build the SAME
+board INCREMENTALLY, so each step's change is visible on the canvas (for a
+step-by-step construction video). The pcbnew Scripting Console keeps its
+namespace across steps (variables, imports, the board handle persist).
+- STEP 1's code MUST initialise + clear the open board, then draw the board
+  outline: import pcbnew; b=pcbnew.GetBoard(); [b.Remove(x) for x in list(b.GetFootprints())]; [b.Remove(t) for t in list(b.GetTracks())]; <draw Edge.Cuts outline>; pcbnew.Refresh().
+- EVERY step ends with pcbnew.Refresh() so its change shows; ONE physical line.
+- Build order across steps: outline -> ONE footprint per step (each at its own
+  SetPosition) -> add nets -> route tracks (a single net's tracks may be one
+  step) -> pour zones. Do NOT leave footprints at the origin.
+- Use the EXACT positions, layers, nets and ops from the input build — the final
+  board MUST be identical. Do NOT simplify or drop footprints/tracks.
+- 2–15 steps; EVERY step `code` non-empty + runnable on its own (given prior
+  steps ran).
+Output JSON: {"steps":[{"i":1,"name":"...","code":"...","why":"..."}, ...]}
+"""
+
 
 def load_goal_metadata(goal_png: Path) -> dict[str, Any] | None:
     """Read the `<goal>.meta.json` sidecar next to the goal image."""
@@ -334,6 +412,23 @@ def _metadata_text(meta: dict[str, Any]) -> str:
             bb = p.get("bbox") or p.get("dims")
             org = p.get("origin")
             lines.append(f"    part_{i:02d}: bbox={bb} origin={org}")
+    # KiCad: surface the board's footprint table + net/layer counts so the
+    # planner inherits exact placements (analogous to the FC per-part table).
+    kc = meta.get("kicad") or {}
+    if kc:
+        lines.append(
+            f"  PCB: footprints={kc.get('footprint_count')} nets={kc.get('net_count')} "
+            f"layers={kc.get('layer_count')} outline_bbox_mm={kc.get('outline_bbox_mm')}")
+        fps = kc.get("footprints") or []
+        if fps:
+            lines.append(f"  PER-FOOTPRINT PLACEMENT ({len(fps)} footprints):")
+            for f in fps:
+                lines.append(
+                    f"    {f.get('ref')}: at={f.get('at')} rot={f.get('rot')} "
+                    f"layer={f.get('layer')} ({f.get('name')})")
+        nets = kc.get("nets") or []
+        if nets:
+            lines.append(f"  NETS: {nets}")
     return "\n".join(lines)
 
 
@@ -385,7 +480,8 @@ class FrontierPlanner:
             user_blocks.append({"type": "text", "text": style_hint})
         user_blocks.append({"type": "text",
                             "text": "Output the BUILD_PLAN JSON now."})
-        system = _PLANNER_SYSTEM_BL if self.app == "blender" else _PLANNER_SYSTEM
+        system = {"blender": _PLANNER_SYSTEM_BL,
+                  "kicad": _PLANNER_SYSTEM_KICAD}.get(self.app, _PLANNER_SYSTEM)
         payload = {
             "model": self.model,
             "messages": [
@@ -491,7 +587,8 @@ class FrontierPlanner:
         """Stage 2: split a complete build into ordered runnable+visible steps
         whose concatenation reproduces the SAME final geometry. Returns
         (steps_list, usage) or ([], None)."""
-        system = _DECOMPOSE_BL if self.app == "blender" else _DECOMPOSE_FC
+        system = {"blender": _DECOMPOSE_BL,
+                  "kicad": _DECOMPOSE_KICAD}.get(self.app, _DECOMPOSE_FC)
         user = f"GOAL_NAME = {goal_name!r}\n\nFULL BUILD to decompose:\n{full_code}\n\nOutput the decomposition JSON now."
         payload = {
             "model": self.model,
@@ -574,7 +671,8 @@ def _validate_plan(plan: Any) -> bool:
     if not isinstance(plan, dict):
         return False
     fc = plan.get("full_code")
-    if not isinstance(fc, str) or len(fc) < 20 or not ("doc" in fc or "bpy" in fc):
+    if not isinstance(fc, str) or len(fc) < 20 or not (
+            "doc" in fc or "bpy" in fc or "pcbnew" in fc or "GetBoard" in fc):
         return False
     if not isinstance(plan.get("steps"), list) or not plan["steps"]:
         return False
@@ -608,15 +706,21 @@ def render_plan_block(plan: dict[str, Any], plan_format: str = "python_eval") ->
             lines.append(f"    {s.get('i')}. {s.get('name')}: {s.get('why','')}")
 
     if plan_format == "python_eval":
+        # Verb-adapt: KiCad full_code is pcbnew (emitted via a pcbnew_eval
+        # action), FreeCAD/Blender via python_eval. Detect from the code.
+        fc = p.get("full_code", "")
+        verb = "pcbnew_eval" if ("pcbnew" in fc or "GetBoard" in fc) else "python_eval"
+        target = "board" if verb == "pcbnew_eval" else "asset"
         lines += [
             "",
-            "DO THIS: emit the python_eval below ONCE to build the whole asset. "
-            "It is idempotent (reuses+clears one document), so it already creates "
-            "the full model in a single shot. After it runs, your NEXT action MUST "
-            'be {"type":"terminate"} — do NOT re-emit it. Re-running the same code '
-            "wastes steps and will trigger loop-kill. Only emit DIFFERENT code if "
-            "AGENT_STATE shows the build genuinely failed or is wrong.",
-            f"  {p.get('full_code','')}",
+            f"DO THIS: emit the {verb} below ONCE to build the whole {target}. "
+            "It is idempotent (reuses+clears the open document/board), so it "
+            "already creates the full result in a single shot. After it runs, your "
+            'NEXT action MUST be {"type":"terminate"} — do NOT re-emit it. '
+            "Re-running the same code wastes steps and will trigger loop-kill. "
+            "Only emit DIFFERENT code if AGENT_STATE shows the build genuinely "
+            "failed or is wrong.",
+            f"  {fc}",
         ]
     else:  # build_star
         lines += [

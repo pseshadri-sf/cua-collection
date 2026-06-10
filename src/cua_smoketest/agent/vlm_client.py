@@ -337,8 +337,44 @@ template — a rough approximation is worth 30-60 match_score points;
 a perfectly-navigated menu with no python_eval is worth 0.
 """
 
+# KiCad (pcbnew) strategy: emit pcbnew_eval to build the PCB layout, frame, then
+# terminate. Mirrors the FreeCAD strategy's shape (atomic compound actions, mm
+# units, explicit placement) for the pcbnew SWIG API.
+_QWEN_KICAD_STRATEGY = """\
+
+REQUIRED STRATEGY (KiCad pcbnew): Reconstruct the GOAL_STATE PCB LAYOUT using
+these atomic compound actions — NOT the underlying menu/click chains:
+
+  1. {"type":"pcbnew_eval","code":"<one-line pcbnew Python that builds the board>"}
+        — Atomic: opens the Scripting Console (idempotent), runs `code`,
+          refreshes the canvas. `b=pcbnew.GetBoard()` is the LIVE board; every
+          footprint/track/zone you Add() appears at once. Single-line only.
+  2. {"type":"frame_view"}
+        — Zoom-to-fit the canvas if geometry is off-screen.
+  3. {"type":"terminate"}
+        — when CURRENT_STATE matches GOAL_STATE.
+
+UNITS + PLACEMENT (MANDATORY): ALWAYS wrap mm with pcbnew.FromMM(...) and
+positions with pcbnew.VECTOR2I(pcbnew.FromMM(x),pcbnew.FromMM(y)) — raw ints are
+nanometres. Place EVERY footprint at its own SetPosition; footprints left at
+(0,0) stack into one pile. Reference layers via b.GetLayerID('F.Cu'|'B.Cu'|
+'Edge.Cuts'). Build order: outline -> place footprints -> nets -> route -> zones.
+
+pcbnew templates (adjust to the goal; ALWAYS end with pcbnew.Refresh()):
+
+  place a footprint:
+    import pcbnew;b=pcbnew.GetBoard();fp=pcbnew.FootprintLoad('Resistor_SMD.pretty','R_0805_2012Metric');fp.SetReference('R1');fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15)));b.Add(fp);pcbnew.Refresh()
+
+  route a track:
+    import pcbnew;b=pcbnew.GetBoard();t=pcbnew.PCB_TRACK(b);t.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15)));t.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(30),pcbnew.FromMM(15)));t.SetWidth(pcbnew.FromMM(0.25));t.SetLayer(b.GetLayerID('F.Cu'));b.Add(t);pcbnew.Refresh()
+
+  board outline (rectangle on Edge.Cuts):
+    import pcbnew;b=pcbnew.GetBoard();s=pcbnew.PCB_SHAPE(b);s.SetShape(pcbnew.SHAPE_T_RECT);s.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(0),pcbnew.FromMM(0)));s.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(40),pcbnew.FromMM(30)));s.SetLayer(b.GetLayerID('Edge.Cuts'));b.Add(s);pcbnew.Refresh()
+"""
+
 _QWEN_FREECAD_REMINDER = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_FREECAD_STRATEGY
 _QWEN_BLENDER_REMINDER = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_BLENDER_STRATEGY
+_QWEN_KICAD_REMINDER = _QWEN_SCHEMA_REMINDER_COMMON + _QWEN_KICAD_STRATEGY
 
 # Backward-compat alias for any external import — defaults to FreeCAD.
 _QWEN_SCHEMA_REMINDER = _QWEN_FREECAD_REMINDER
@@ -1030,7 +1066,11 @@ class OpenRouterVLMClient:
         # agent python_eval examples to pattern-match on. v2 swaps the
         # whole strategy. python_eval remains as escape hatch.
         self._structured_actions = bool(structured_actions and self._is_qwen)
-        if self._structured_actions:
+        if app == "kicad":
+            # No KiCad V2 structured-strategy variant; use the base pcbnew
+            # reminder regardless of the structured_actions flag.
+            self._qwen_reminder = _QWEN_KICAD_REMINDER
+        elif self._structured_actions:
             self._qwen_reminder = _QWEN_BLENDER_REMINDER_V2 if app == "blender" else _QWEN_FREECAD_REMINDER_V2
         else:
             self._qwen_reminder = _QWEN_BLENDER_REMINDER if app == "blender" else _QWEN_FREECAD_REMINDER
@@ -1388,7 +1428,7 @@ class OpenRouterVLMClient:
             return None
         bbox = meta.get("bbox_mm") or [0, 0, 0]
         bn   = meta.get("bbox_normalized") or [0, 0, 0]
-        unit = "mm" if meta.get("app") == "freecad" else "units"
+        unit = "mm" if meta.get("app") in ("freecad", "kicad") else "units"
         try:
             header = _W4_GROUNDED_HEADER.format(
                 klass  = meta.get("dominant_primitive_class", "unknown"),
