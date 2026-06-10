@@ -348,10 +348,100 @@ def main_bl() -> int:
     return 0
 
 
+def main_kicad() -> int:
+    """KiCad (pcbnew) goal-metadata extractor. Run with the system python3 that
+    has the pcbnew module (KiCad install). Emits bbox + the kicad{} block the
+    planner grounding uses (footprint placements, nets, layer counts)."""
+    import pcbnew  # type: ignore[import-not-found]
+    asset = os.environ["META_ASSET"]
+    out_path = os.environ["META_OUT"]
+    try:
+        board = pcbnew.LoadBoard(asset)
+        tomm = pcbnew.ToMM
+
+        # Board outline bbox (Edge.Cuts); fall back to the full bbox.
+        try:
+            bb = board.GetBoardEdgesBoundingBox()
+            if bb.GetWidth() == 0 and bb.GetHeight() == 0:
+                bb = board.GetBoundingBox()
+        except Exception:
+            bb = board.GetBoundingBox()
+        w_mm = round(tomm(bb.GetWidth()), 2)
+        d_mm = round(tomm(bb.GetHeight()), 2)
+
+        footprints = []
+        pad_count = 0
+        for fp in board.GetFootprints():
+            pos = fp.GetPosition()
+            pads = list(fp.Pads())
+            pad_count += len(pads)
+            footprints.append({
+                "ref": fp.GetReference(),
+                "name": fp.GetFPIDAsString(),
+                "at": [round(tomm(pos.x), 2), round(tomm(pos.y), 2)],
+                "rot": round(fp.GetOrientationDegrees(), 1),
+                "layer": "B.Cu" if fp.IsFlipped() else "F.Cu",
+            })
+
+        # Net names (skip the unconnected net 0). FindNet accepts a netcode.
+        nets = []
+        for code in range(1, board.GetNetCount()):
+            try:
+                ni = board.FindNet(code)
+                if ni is not None:
+                    nm = ni.GetNetname()
+                    if nm:
+                        nets.append(nm)
+            except Exception:
+                pass
+
+        layer_count = board.GetCopperLayerCount()
+        net_count = max(0, board.GetNetCount() - 1)
+        meta = {
+            "asset": asset,
+            "app": "kicad",
+            "bbox_mm": [w_mm, d_mm, 0],
+            "object_count": len(footprints),
+            "kicad": {
+                "footprint_count": len(footprints),
+                "net_count": net_count,
+                "layer_count": layer_count,
+                "pad_count": pad_count,
+                "outline_bbox_mm": [w_mm, d_mm],
+                "footprints": footprints,
+                "nets": nets,
+            },
+            "shape_descriptor": (
+                f"PCB: {len(footprints)} footprints, {net_count} nets, "
+                f"{layer_count} copper layers, {w_mm}x{d_mm} mm board"
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        meta = {"asset": asset, "app": "kicad", "error": f"{type(exc).__name__}: {exc}"}
+    with open(out_path, "w") as fh:
+        json.dump(meta, fh, indent=2)
+    print(f"[ok] wrote {out_path}: {meta.get('shape_descriptor', meta.get('error'))}")
+    return 0
+
+
 if __name__ == "__main__":
-    # Auto-detect FC vs BL by which interpreter is running us.
+    # Auto-detect engine by which interpreter is running us:
+    # blender (bpy) -> KiCad (pcbnew) -> FreeCAD (freecadcmd default).
+    # META_APP can force a branch.
+    forced = os.environ.get("META_APP", "").lower()
+    if forced == "kicad":
+        raise SystemExit(main_kicad())
+    if forced == "blender":
+        raise SystemExit(main_bl())
+    if forced == "freecad":
+        raise SystemExit(main_fc())
     try:
         import bpy  # noqa: F401
         raise SystemExit(main_bl())
+    except ImportError:
+        pass
+    try:
+        import pcbnew  # noqa: F401
+        raise SystemExit(main_kicad())
     except ImportError:
         raise SystemExit(main_fc())

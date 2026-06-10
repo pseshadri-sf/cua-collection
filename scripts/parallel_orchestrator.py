@@ -466,12 +466,12 @@ def ensure_metadata_sidecars(jobs: list[dict]) -> None:
     resolvers = {"freecad": resolve_freecad_goal_asset,
                  "blender": resolve_blender_goal_asset,
                  "kicad": resolve_kicad_goal_asset}
-    # KiCad metadata is extracted by the headless kicad python (M3 arm of
-    # extract_goal_metadata.py). Until that lands, kicad sidecars come from
-    # procurement; skip extraction here gracefully rather than misrouting.
+    # KiCad metadata is extracted by the system python3 that has the pcbnew
+    # module (the KiCad install), via the extract_goal_metadata.py kicad arm.
     extract_cmds = {
         "freecad": ["freecadcmd", str(extractor)],
         "blender": ["blender", "-b", "-noaudio", "-P", str(extractor)],
+        "kicad": ["/usr/bin/python3", str(extractor)],
     }
     n_ok = n_miss = n_err = 0
     for gp, app in needs:
@@ -481,9 +481,10 @@ def ensure_metadata_sidecars(jobs: list[dict]) -> None:
             print(f"  [miss] no asset for {gp.name}"); n_miss += 1; continue
         cmd = extract_cmds.get(app)
         if cmd is None:
-            print(f"  [skip] {gp.name}: {app} metadata extraction is M3-pending")
+            print(f"  [skip] {gp.name}: no metadata extractor for app={app}")
             n_miss += 1; continue
-        env = {**os.environ, "META_ASSET": str(asset), "META_OUT": str(gp.with_suffix(".meta.json"))}
+        env = {**os.environ, "META_ASSET": str(asset),
+               "META_OUT": str(gp.with_suffix(".meta.json")), "META_APP": app}
         try:
             subprocess.run(cmd, env=env, timeout=120,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
