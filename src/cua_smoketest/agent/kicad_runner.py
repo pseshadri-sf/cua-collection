@@ -1,12 +1,12 @@
 """Agentic trajectory runner for KiCad (pcbnew PCB layout).
 
 Same shape as the FreeCAD AgentTrajectoryRunner (which it mirrors — see
-SPEC-kicad-pipeline.md §0/§4): KiCad's Scripting Console is a docked,
-toggling-menu panel like FreeCAD's Python console, so the console-init,
-file+exec eval path, state-probe readback, auto-frame injection, and loop-kill
-all carry over. Deltas: launches pcbnew on a blank SEED board (GetBoard() needs
-an open document), uses KiCadActionExecutor + pcbnew_eval, and a pcbnew-specific
-system prompt + state probe.
+SPEC-kicad-pipeline.md §0/§4): the console-init, file+exec eval path, state-probe
+readback, auto-frame injection, and loop-kill all carry over. Deltas: launches
+pcbnew on a blank SEED board (GetBoard() needs an open document), uses
+KiCadActionExecutor + pcbnew_eval, and a pcbnew-specific system prompt + state
+probe. (M0: the pcbnew Scripting Console is a floating "KiPython" PyShell window,
+handled inside KiCadActionExecutor.)
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ PCB canvas occupies the centre; centre at roughly (960, 560). The "Home" key
 Layers manager docks on the right.
 
 === STRATEGY: Scripting Console (recommended) ===
-  Step 1: {{"type":"pcbnew_eval","code":"import pcbnew; b=pcbnew.GetBoard(); fp=pcbnew.FootprintLoad('Resistor_SMD.pretty','R_0805_2012Metric'); fp.SetReference('R1'); fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15))); b.Add(fp); pcbnew.Refresh()"}}
+  Step 1: {{"type":"pcbnew_eval","code":"import pcbnew; b=pcbnew.GetBoard(); fp=pcbnew.FootprintLoad('/usr/share/kicad/footprints/Resistor_SMD.pretty','R_0805_2012Metric'); fp.SetReference('R1'); fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15))); b.Add(fp); pcbnew.Refresh()"}}
          -- Atomic: opens the console (once), runs the code via a file, and
          refreshes the canvas. b=pcbnew.GetBoard() is the LIVE board; every
          footprint/track/zone you Add() appears immediately. ALWAYS end code

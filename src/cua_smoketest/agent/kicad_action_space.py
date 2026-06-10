@@ -1,22 +1,26 @@
 """Action space for the KiCad (pcbnew) trajectory harness.
 
-Mirrors the FreeCAD ActionExecutor (NOT Blender): KiCad's Scripting Console is a
-docked, *toggling* menu panel just like FreeCAD's Python console, so the same
-robustness machinery applies and is inherited here:
-  - open-once `_console_opened` latch (the menu item toggles the panel),
-  - `open_scripting_console(verify=True)` marker-file verification,
+Mirrors the FreeCAD ActionExecutor (NOT Blender) — mm units, file+exec console
+typing, marker-verified console open, state-probe readback. M0 validated the
+KiCad-specific reality of the console and baked it in here:
+  - The pcbnew Scripting Console is a FLOATING wxPython PyShell window titled
+    "KiPython" (NOT a docked panel). open_scripting_console clicks
+    Tools>Scripting Console, then locates that window and moves/resizes/
+    activates it to a fixed rect so the shell-click point is stable.
+  - Typing goes via `_submit_to_shell`: click the shell, Ctrl+End to reach the
+    prompt (the startup banner scrolls it out of view), type, Enter.
   - `pcbnew_eval` runs code via a FILE + a short `exec(open(...).read())` line
-    (typing long footprint/track lines char-by-char into a console is unreliable),
-  - an in-console frame script (pcbnew.Refresh) run focus-independently after
-    every build, plus a belt-and-suspenders real-input zoom-to-fit.
+    (typing long footprint/track lines char-by-char is unreliable), then a
+    frame script (pcbnew.Refresh) + a belt-and-suspenders real-input Home.
+  - `open_scripting_console(verify=True)` writes a marker file via the shell and
+    retries the open until it appears (#1 cause of empty builds on the FC path).
 
 The primary verb is `pcbnew_eval`. Structured PCB actions (place_footprint,
 route_track, ...) are validated, typed wrappers that render to a pcbnew snippet
-and route through the same `pcbnew_eval` path. Units are millimetres via
-pcbnew.FromMM, matching FreeCAD's mm model.
+and route through the same `pcbnew_eval` path.
 
-KiCad 10 on Xvfb 1920x1080, Fallback (Cairo) GAL canvas. Coordinates marked
-"M0" are confirmed/adjusted during the infra spike (SPEC-kicad-pipeline.md §3).
+KiCad 10.0.3 on Xvfb 1920x1080. Coordinates here are M0-measured (the maximized
+pcbnew window). FootprintLoad needs the FULL .pretty path (not a nickname).
 """
 from __future__ import annotations
 
@@ -104,7 +108,7 @@ You may emit exactly one action per turn, formatted as JSON. Available actions:
       `pcbnew.Refresh()`. Units are nanometres internally; ALWAYS wrap mm with
       pcbnew.FromMM(...) and positions with pcbnew.VECTOR2I(...).
       Example:
-        import pcbnew; b=pcbnew.GetBoard(); fp=pcbnew.FootprintLoad('Resistor_SMD.pretty','R_0805_2012Metric'); fp.SetReference('R1'); fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15))); b.Add(fp); pcbnew.Refresh()
+        import pcbnew; b=pcbnew.GetBoard(); fp=pcbnew.FootprintLoad('/usr/share/kicad/footprints/Resistor_SMD.pretty','R_0805_2012Metric'); fp.SetReference('R1'); fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15))); b.Add(fp); pcbnew.Refresh()
 
   {"type": "frame_view"}
       Compound macro: focus the canvas + press Home (Zoom to Fit). Use after a

@@ -363,7 +363,7 @@ nanometres. Place EVERY footprint at its own SetPosition; footprints left at
 pcbnew templates (adjust to the goal; ALWAYS end with pcbnew.Refresh()):
 
   place a footprint:
-    import pcbnew;b=pcbnew.GetBoard();fp=pcbnew.FootprintLoad('Resistor_SMD.pretty','R_0805_2012Metric');fp.SetReference('R1');fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15)));b.Add(fp);pcbnew.Refresh()
+    import pcbnew;b=pcbnew.GetBoard();fp=pcbnew.FootprintLoad('/usr/share/kicad/footprints/Resistor_SMD.pretty','R_0805_2012Metric');fp.SetReference('R1');fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15)));b.Add(fp);pcbnew.Refresh()
 
   route a track:
     import pcbnew;b=pcbnew.GetBoard();t=pcbnew.PCB_TRACK(b);t.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15)));t.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(30),pcbnew.FromMM(15)));t.SetWidth(pcbnew.FromMM(0.25));t.SetLayer(b.GetLayerID('F.Cu'));b.Add(t);pcbnew.Refresh()
