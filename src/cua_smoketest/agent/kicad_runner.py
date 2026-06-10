@@ -63,11 +63,12 @@ File>Append Board, drag-and-drop, or import. Build everything from the open
 
 === UI LANDMARKS (pcbnew 10, 1920x1080, default theme) ===
 
-Menubar (y around 38): File, Edit, View, Place, Route, Inspect, Tools, ...
-  The Scripting Console lives under Tools > Scripting Console.
-PCB canvas occupies the centre; centre at roughly (860, 520). The "Home" key
+Menubar (y around 31): File, Edit, View, Place, Route, Inspect, Tools, ...
+  The Scripting Console lives under Tools > Scripting Console; it opens as a
+  floating "KiPython" window (the harness positions it for you).
+PCB canvas occupies the centre; centre at roughly (960, 560). The "Home" key
   (Zoom to Fit) only acts on the canvas when the cursor is hovering over it.
-Layers manager docks on the right; the Scripting Console docks at the bottom.
+Layers manager docks on the right.
 
 === STRATEGY: Scripting Console (recommended) ===
   Step 1: {{"type":"pcbnew_eval","code":"import pcbnew; b=pcbnew.GetBoard(); fp=pcbnew.FootprintLoad('Resistor_SMD.pretty','R_0805_2012Metric'); fp.SetReference('R1'); fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(20),pcbnew.FromMM(15))); b.Add(fp); pcbnew.Refresh()"}}
@@ -287,7 +288,8 @@ class KiCadAgentTrajectoryRunner:
         probe_path = Path(f"/tmp/cua_kicad_s_{wid}.py")
         state_json_path.unlink(missing_ok=True)
         probe_path.write_text(_STATE_PROBE_KICAD.replace("__STATE_JSON__", str(state_json_path)))
-        executor = KiCadActionExecutor(state_probe_path=str(probe_path))
+        executor = KiCadActionExecutor(state_probe_path=str(probe_path),
+                                       display=session.display)
 
         recorder = ScreenRecorder(
             display=session.display, output=video_path, logs_dir=logs_dir,

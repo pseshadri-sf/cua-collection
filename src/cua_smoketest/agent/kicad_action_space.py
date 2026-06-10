@@ -21,6 +21,8 @@ KiCad 10 on Xvfb 1920x1080, Fallback (Cairo) GAL canvas. Coordinates marked
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -37,22 +39,20 @@ VALID_TYPES = {
 }
 
 
-# Where to click to give the PCB canvas keyboard focus (M0-measured).
-CANVAS_FOCUS_XY: tuple[int, int] = (860, 520)
-# Scripting Console input row after Tools>Scripting Console docks it (M0).
-PCBNEW_CONSOLE_INPUT_XY: tuple[int, int] = (700, 1000)
+# All M0-measured on KiCad 10.0.3 under Xvfb at 1920x1080 (maximized pcbnew).
+CANVAS_FOCUS_XY: tuple[int, int] = (960, 560)     # PCB canvas centre
+TOOLS_MENU_XY: tuple[int, int] = (318, 31)        # Tools in the menubar
+SCRIPTING_CONSOLE_ITEM_XY: tuple[int, int] = (382, 438)  # Tools > Scripting Console
 
-
-# Pre-measured click/hover sequence to open the Scripting Console via the menu
-# (Tools menu, "Scripting Console" item). Coords are M0-measured on KiCad 10
-# 1920x1080. The menu item TOGGLES the panel — open exactly once (see
-# `_console_opened`). Mirrors FreeCAD's MENU_PATHS.
-MENU_PATHS: dict[tuple[str, ...], list[tuple[str, int, int, float]]] = {
-    ("Tools", "Scripting Console"): [
-        ("click", 330, 38, 0.8),    # Tools menu in the menubar (M0)
-        ("click", 380, 300, 0.8),   # "Scripting Console" item (M0)
-    ],
-}
+# The pcbnew Scripting Console is a FLOATING wxPython PyShell window titled
+# "KiPython" (NOT a docked panel). After opening it we move+resize it to a fixed
+# rect so the shell-click point is stable; the PyShell prompt is reached with
+# Ctrl+End (the startup banner scrolls it out of view). (M0 finding.)
+CONSOLE_WINDOW_NAME = "KiPython"
+CONSOLE_RECT: tuple[int, int, int, int] = (560, 420, 800, 620)  # x, y, w, h
+# Click point inside the shell text pane (upper area), then Ctrl+End -> prompt.
+SHELL_CLICK_XY: tuple[int, int] = (CONSOLE_RECT[0] + CONSOLE_RECT[2] // 2,
+                                   CONSOLE_RECT[1] + 90)
 
 
 # Authoritative human-readable spec embedded in the system prompt.
@@ -142,12 +142,15 @@ class KiCadActionExecutor:
     Blender) — the Scripting Console is the same docked, toggling-menu panel.
     """
 
-    def __init__(self, state_probe_path: "str | None" = None):
+    def __init__(self, state_probe_path: "str | None" = None,
+                 display: "str | None" = None):
         import pyautogui  # noqa: PLC0415
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.05
         self._pg = pyautogui
         self._state_probe_path = state_probe_path
+        # DISPLAY for xdotool window ops (DisplayManager.acquire sets os.environ).
+        self.display = display or os.environ.get("DISPLAY", ":99")
         # Frame script: force a canvas refresh focus-independently after every
         # build. Written once to a fixed path.
         self._frame_path = "/tmp/cua_kicad_frame.py"
@@ -245,30 +248,21 @@ class KiCadActionExecutor:
     # --- KiCad-specific compound actions -----------------------------------
 
     def _do_menu_navigate(self, a: dict) -> ExecutionResult:
+        """Only the Tools>Scripting Console path is supported; it opens the
+        console (kept for prompt/back-compat with the menu_navigate vocabulary)."""
         raw_path = a.get("path")
         if not isinstance(raw_path, list) or not all(isinstance(p, str) for p in raw_path):
             return ExecutionResult(False, "'menu_navigate' requires 'path': [str, ...]")
-        key = tuple(raw_path)
-        sequence = MENU_PATHS.get(key)
-        if sequence is None:
+        if tuple(raw_path) != ("Tools", "Scripting Console"):
             return ExecutionResult(
-                False,
-                f"unknown menu path {raw_path!r}; supported: {sorted(MENU_PATHS.keys())}",
-            )
-        for kind, x, y, delay in sequence:
-            if kind == "click":
-                self._pg.moveTo(x, y, duration=0.15)
-                self._pg.click()
-            elif kind == "hover":
-                self._pg.moveTo(x, y, duration=0.15)
-            time.sleep(delay)
-        if key == ("Tools", "Scripting Console"):
-            self._console_opened = True
-        return ExecutionResult(True, post_action_sleep=0.8)
+                False, f"unsupported menu path {raw_path!r}; only "
+                       "['Tools','Scripting Console'] is supported")
+        self.open_scripting_console()
+        return ExecutionResult(True, post_action_sleep=0.6)
 
     def _do_open_scripting_console(self, a: dict) -> ExecutionResult:
-        self.open_scripting_console(verify=False)
-        return ExecutionResult(True, post_action_sleep=0.8)
+        self.open_scripting_console()
+        return ExecutionResult(True, post_action_sleep=0.6)
 
     def _do_focus_canvas(self, a: dict) -> ExecutionResult:
         x, y = CANVAS_FOCUS_XY
@@ -276,42 +270,64 @@ class KiCadActionExecutor:
         self._pg.click()
         return ExecutionResult(True, post_action_sleep=0.5)
 
-    def _nav_open_console(self) -> None:
-        seq = MENU_PATHS.get(("Tools", "Scripting Console"))
-        if seq is None:
-            return
-        for kind, x, y, delay in seq:
-            if kind == "click":
-                self._pg.moveTo(x, y, duration=0.15); self._pg.click()
-            elif kind == "hover":
-                self._pg.moveTo(x, y, duration=0.15)
-            time.sleep(delay)
-        time.sleep(0.5)
+    # --- console window management (xdotool; the console floats) -----------
+
+    def _xdo(self, *args: str) -> str:
+        xdotool = shutil.which("xdotool")
+        if not xdotool:
+            return ""
+        env = {**os.environ, "DISPLAY": self.display}
+        try:
+            r = subprocess.run([xdotool, *args], capture_output=True, text=True,
+                               env=env, timeout=6)
+            return r.stdout.strip()
+        except subprocess.SubprocessError:
+            return ""
+
+    def _find_console_window(self) -> str | None:
+        ids = self._xdo("search", "--name", CONSOLE_WINDOW_NAME).split()
+        return ids[-1] if ids else None
+
+    def _place_console(self, wid: str) -> None:
+        """Move+resize+activate the floating console to CONSOLE_RECT so the
+        shell-click point is stable across runs."""
+        x, y, w, h = CONSOLE_RECT
+        self._xdo("windowmove", wid, str(x), str(y))
+        self._xdo("windowsize", wid, str(w), str(h))
+        self._xdo("windowactivate", "--sync", wid)
+        time.sleep(0.6)
 
     def open_scripting_console(self, verify: bool = False) -> None:
-        """Open the pcbnew Scripting Console once. With verify=True, confirm it
-        is open + focused by running a command that writes a marker FILE and
-        checking the file appeared; retry the menu-open if not. Removes the
-        dependence on a single flaky menu click (the #1 cause of empty builds on
-        the FreeCAD path, which this mirrors)."""
-        cx, cy = PCBNEW_CONSOLE_INPUT_XY
-        if not verify:
-            self._nav_open_console()
-            self._console_opened = True
+        """Open the pcbnew Scripting Console (Tools>Scripting Console), then
+        move/resize/activate the floating KiPython window to a fixed rect. With
+        verify=True, confirm the shell executes by writing a marker file and
+        retrying the open if it doesn't appear (mirrors the FreeCAD verify; the
+        #1 cause of empty builds is a console that never opened/focused)."""
+        if self._console_opened and self._find_console_window():
             return
+        attempts = 4 if verify else 1
         marker = "/tmp/cua_kicad_console_ok_%d" % os.getpid()
-        for _attempt in range(4):
-            self._nav_open_console()
+        for _ in range(attempts):
+            if not self._find_console_window():
+                tx, ty = TOOLS_MENU_XY
+                self._pg.moveTo(tx, ty, duration=0.15); self._pg.click()
+                time.sleep(0.8)
+                ix, iy = SCRIPTING_CONSOLE_ITEM_XY
+                self._pg.moveTo(ix, iy, duration=0.15); self._pg.click()
+                time.sleep(3.0)
+            wid = self._find_console_window()
+            if not wid:
+                continue
+            self._place_console(wid)
+            if not verify:
+                self._console_opened = True
+                return
             try:
                 if os.path.exists(marker):
                     os.remove(marker)
             except OSError:
                 pass
-            self._pg.moveTo(cx, cy, duration=0.15); self._pg.click()
-            time.sleep(0.3)
-            self._pg.typewrite("open(r'%s','w').close()" % marker, interval=0.01)
-            time.sleep(0.15)
-            self._pg.press("enter")
+            self._submit_to_shell("open(r'%s','w').close()" % marker)
             time.sleep(0.6)
             if os.path.exists(marker):
                 try:
@@ -320,19 +336,29 @@ class KiCadActionExecutor:
                     pass
                 self._console_opened = True
                 return
-        # give up after retries; mark opened so steps still attempt to type
-        self._console_opened = True
+        self._console_opened = True  # give up; steps still attempt to type
+
+    def _submit_to_shell(self, line: str) -> None:
+        """Focus the KiPython shell, jump to the prompt (Ctrl+End — the startup
+        banner scrolls it out of view), type one line, Enter."""
+        sx, sy = SHELL_CLICK_XY
+        self._pg.moveTo(sx, sy, duration=0.15)
+        self._pg.click()
+        time.sleep(0.3)
+        self._pg.hotkey("ctrl", "end")
+        time.sleep(0.2)
+        self._pg.typewrite(line, interval=0.008)
+        time.sleep(0.2)
+        self._pg.press("enter")
 
     def _do_pcbnew_eval(self, a: dict) -> ExecutionResult:
-        """Atomic: open console (idempotent) + focus input + run code (via
-        file) + refresh canvas + (optional) state probe + belt-and-suspenders
-        zoom-to-fit. Mirrors FreeCAD _do_python_eval."""
+        """Atomic: open console (idempotent) + run code (via file+exec) + refresh
+        canvas + (optional) state probe + belt-and-suspenders zoom-to-fit.
+        Mirrors FreeCAD _do_python_eval; the console is the floating KiPython
+        PyShell, reached via Ctrl+End."""
         code = a.get("code")
         if not isinstance(code, str) or not code.strip():
             return ExecutionResult(False, "'pcbnew_eval' requires non-empty string 'code'")
-        # Write the build code to a file and run it via a SHORT typed line, then
-        # run the frame script (canvas refresh). Typing `exec(open(...))` is
-        # robust where typing complex multi-statement pcbnew code is not.
         try:
             with open(self._eval_path, "w") as fh:
                 fh.write(code)
@@ -341,32 +367,16 @@ class KiCadActionExecutor:
         typed = "exec(open(r'%s').read())" % self._eval_path
         if self._frame_path:
             typed += ";exec(open(r'%s').read())" % self._frame_path
-        cx, cy = PCBNEW_CONSOLE_INPUT_XY
-        # 1. Open the console exactly ONCE and keep it open (the menu toggles).
         if not self._console_opened:
             self.open_scripting_console()
-        # 2. Focus the console input (click it; harmless if already focused).
-        self._pg.moveTo(cx, cy, duration=0.15)
-        self._pg.click()
-        time.sleep(0.3)
-        # 3. Type the short exec line + Enter.
-        self._pg.typewrite(typed, interval=0.01)
-        time.sleep(0.2)
-        self._pg.press("enter")
+        # Run the build + frame script in the shell.
+        self._submit_to_shell(typed)
         time.sleep(1.5)  # Cairo software canvas needs time to repaint
-        # 4. Optional state probe as a SEPARATE short submission (keeps the
-        #    typed line short so it lands reliably).
+        # Optional state probe as a SEPARATE short submission.
         if self._state_probe_path:
-            self._pg.moveTo(cx, cy, duration=0.15)
-            self._pg.click()
-            time.sleep(0.2)
-            self._pg.typewrite("exec(open(r'%s').read())" % self._state_probe_path,
-                               interval=0.01)
-            time.sleep(0.15)
-            self._pg.press("enter")
+            self._submit_to_shell("exec(open(r'%s').read())" % self._state_probe_path)
             time.sleep(0.5)
-        # 5. Belt-and-suspenders: focus canvas + Home (Zoom to Fit), since the
-        #    scripting API has no clean zoom hook.
+        # Belt-and-suspenders: focus canvas + Home (Zoom to Fit).
         vx, vy = CANVAS_FOCUS_XY
         self._pg.moveTo(vx, vy, duration=0.15)
         self._pg.click()

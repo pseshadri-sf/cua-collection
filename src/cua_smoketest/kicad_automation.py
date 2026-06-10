@@ -83,7 +83,28 @@ class KiCadAutomation:
             cmd, stdout=log, stderr=log, env=env, start_new_session=True,
         )
         window_id, title = self._wait_for_window(_WINDOW_SUBSTRINGS, self.window_timeout)
+        # pcbnew launches un-maximized (~1280px); maximize so the canvas + panel
+        # coordinates the action executor uses are stable at 1920x1080.
+        if window_id:
+            self._maximize_window(window_id)
         return KiCadLaunch(pid=self._proc.pid, window_id=window_id, window_title=title)
+
+    def _maximize_window(self, window_id: str) -> None:
+        wmctrl = shutil.which("wmctrl")
+        env = {**os.environ, "DISPLAY": self.display}
+        try:
+            if wmctrl:
+                subprocess.run([wmctrl, "-i", "-r", window_id, "-b",
+                                "add,maximized_vert,maximized_horz"],
+                               capture_output=True, env=env, timeout=5)
+            else:
+                xdotool = shutil.which("xdotool")
+                if xdotool:
+                    subprocess.run([xdotool, "windowsize", window_id, "1920", "1080"],
+                                   capture_output=True, env=env, timeout=5)
+            time.sleep(1.0)
+        except subprocess.SubprocessError:
+            pass
 
     def quit(self, timeout: float = 5.0) -> None:
         if not self._proc or self._proc.poll() is not None:
@@ -119,19 +140,36 @@ class KiCadAutomation:
         time.sleep(0.4)
 
     def dismiss_dialogs(self) -> None:
-        """pcbnew may show a path-config / rescue modal on first board open.
+        """Dismiss the KiCad first-run "KiCad Setup" wizard if present.
 
-        Best-effort: Escape twice (cancel the modal) then Return (accept a
-        default button if Escape didn't apply). Idempotent — harmless if no
-        dialog is present. Mirrors BlenderAutomation.dismiss_splash.
+        Validated against KiCad 10 under Xvfb (M0): the wizard appears on EVERY
+        launch (Cancel→Yes uses defaults but doesn't mark setup complete), and
+        KiCad is wxWidgets so synthetic `xdotool key --window` events are
+        dropped — only real mouse clicks register. So we locate the wizard
+        window, click its Cancel button (bottom-right of the dialog), then click
+        Yes on the "Are you sure?" Confirmation. Idempotent: if no wizard is
+        present this is a no-op (nothing is clicked). Mirrors the
+        dismiss_splash role for the other apps.
         """
-        time.sleep(0.5)
-        self._key("Escape")
-        time.sleep(0.3)
-        self._key("Escape")
-        time.sleep(0.3)
-        self._key("Return")
-        time.sleep(0.3)
+        wiz = self._find_window("KiCad Setup")
+        if not wiz:
+            time.sleep(1.0)
+            wiz = self._find_window("KiCad Setup")  # brief retry — may still be opening
+        if not wiz:
+            return
+        g = self._window_geometry(wiz)
+        if not g:
+            return
+        # Cancel button: bottom-right of the wizard dialog (M0-measured offsets).
+        self._click(g["X"] + g["WIDTH"] - 55, g["Y"] + g["HEIGHT"] - 48)
+        time.sleep(1.5)
+        conf = self._find_window("Confirmation")
+        if conf:
+            gc = self._window_geometry(conf)
+            if gc:
+                # Yes button: bottom-left quadrant of the confirmation.
+                self._click(gc["X"] + int(gc["WIDTH"] * 0.25), gc["Y"] + gc["HEIGHT"] - 40)
+                time.sleep(1.5)
 
     # --- config seeding ----------------------------------------------------
 
@@ -196,6 +234,39 @@ class KiCadAutomation:
         env = {**os.environ, "DISPLAY": self.display}
         subprocess.run([xdotool, "mousemove", str(x), str(y)],
                        capture_output=True, env=env, timeout=5)
+
+    def _click(self, x: int, y: int) -> None:
+        """Real mouse click (registers with wxWidgets, unlike synthetic keys)."""
+        xdotool = shutil.which("xdotool")
+        if not xdotool:
+            return
+        env = {**os.environ, "DISPLAY": self.display}
+        subprocess.run([xdotool, "mousemove", str(x), str(y), "click", "1"],
+                       capture_output=True, env=env, timeout=5)
+
+    def _find_window(self, name: str) -> str | None:
+        xdotool = shutil.which("xdotool")
+        if not xdotool:
+            return None
+        env = {**os.environ, "DISPLAY": self.display}
+        res = subprocess.run([xdotool, "search", "--name", name],
+                             capture_output=True, text=True, env=env, timeout=5)
+        ids = res.stdout.split()
+        return ids[-1] if ids else None
+
+    def _window_geometry(self, window_id: str) -> dict | None:
+        xdotool = shutil.which("xdotool")
+        if not xdotool:
+            return None
+        env = {**os.environ, "DISPLAY": self.display}
+        res = subprocess.run([xdotool, "getwindowgeometry", "--shell", window_id],
+                             capture_output=True, text=True, env=env, timeout=5)
+        g: dict = {}
+        for line in res.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                g[k] = int(v) if v.lstrip("-").isdigit() else v
+        return g if {"X", "Y", "WIDTH", "HEIGHT"} <= g.keys() else None
 
     def _wait_for_window(self, name_substrings: list[str],
                          timeout: float) -> tuple[str | None, str | None]:
