@@ -42,13 +42,32 @@ def run() -> int:
     # FootprintLoad RAISES (not returns None) when the library path doesn't
     # exist — i.e. custom/project footprints not in the system install. Make it
     # return None instead so a missing footprint is skipped, not fatal, even if
-    # the agent code doesn't guard the call itself.
+    # the agent code doesn't guard the call itself. PLUS a system-wide fallback:
+    # many boards reference a footprint whose NAME exists in the standard KiCad
+    # library under a different library nickname — if the named lib fails, search
+    # all installed .pretty dirs for "<name>.kicad_mod" and load the first match.
+    import glob as _glob
+    _fp_root = "/usr/share/kicad/footprints"
+    _name_index: dict[str, str] = {}
+    for _d in _glob.glob(_fp_root + "/*.pretty"):
+        for _mod in _glob.glob(_d + "/*.kicad_mod"):
+            _name_index.setdefault(os.path.basename(_mod)[:-10], _d)  # name -> lib dir
     _orig_fpl = pcbnew.FootprintLoad
+
     def _safe_fpl(lib, name, *a, **k):  # noqa: ANN001
         try:
-            return _orig_fpl(lib, name, *a, **k)
+            fp = _orig_fpl(lib, name, *a, **k)
+            if fp is not None:
+                return fp
         except Exception:
-            return None
+            pass
+        alt = _name_index.get(name)
+        if alt:
+            try:
+                return _orig_fpl(alt, name, *a, **k)
+            except Exception:
+                return None
+        return None
     pcbnew.FootprintLoad = _safe_fpl
 
     ns = {"pcbnew": pcbnew}
