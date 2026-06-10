@@ -196,7 +196,9 @@ modifier. Prefer the simplest construction that matches the goal.
 # KiCad variant: PCB layout reconstruction for the pcbnew SWIG API. Mirrors the
 # FreeCAD planner's conventions (mm units, reuse-and-clear the live document for
 # idempotency, explicit per-part placement) since KiCad's scripting model is the
-# closest analogue. full_code is one-line pcbnew that reuses the open board.
+# closest analogue. full_code is a multi-line pcbnew program (exec'd from a file
+# by both the GUI executor and the headless reconstructor) with a P() helper —
+# real boards have dozens of footprints, so a per-footprint helper is required.
 _PLANNER_SYSTEM_KICAD = """\
 You are an expert PCB-layout reconstruction PLANNER for the KiCad pcbnew SWIG
 API. You are given a GOAL image (rendered views of a target PCB: top copper,
@@ -234,22 +236,45 @@ OUTPUT: a single JSON object, no prose outside it, matching this schema:
       "why": "<short>" },
     ...
   ],
-  "full_code": "<ONE-LINE, semicolon-joined, console-ready pcbnew that
-      reconstructs the ENTIRE board. It MUST be IDEMPOTENT — re-running it must
-      NOT duplicate items. Start by reusing+clearing the open board:
-      import pcbnew; b=pcbnew.GetBoard(); [b.Remove(x) for x in list(b.GetFootprints())];
-      [b.Remove(t) for t in list(b.GetTracks())]; <draw outline; place+position
-      every footprint; add nets; route; pour>; pcbnew.Refresh() — NEVER open a
-      new board; NO newlines, NO def/for-loops that span lines>",
+  "full_code": "<a complete, MULTI-LINE Python program (real newlines REQUIRED —
+      it is exec'd from a file, NOT typed) that reconstructs the ENTIRE board.
+      IDEMPOTENT: start by reusing+clearing the open board. Define a P() helper
+      and call it ONCE PER FOOTPRINT using the FPID + position from
+      GOAL_METADATA. NEVER open a new board. Template:\n
+      import pcbnew\n
+      b=pcbnew.GetBoard()\n
+      [b.Remove(x) for x in list(b.GetFootprints())]\n
+      [b.Remove(t) for t in list(b.GetTracks())]\n
+      [b.Remove(s) for s in list(b.GetDrawings())]\n
+      def P(ref, fpid, x, y, rot=0, back=False):\n
+      \\ttry:\n
+      \\t\\tlib,name = fpid.split(':',1) if ':' in fpid else ('',fpid)\n
+      \\t\\tfp = pcbnew.FootprintLoad('/usr/share/kicad/footprints/'+lib+'.pretty', name)\n
+      \\t\\tif fp is None: return\n
+      \\t\\tfp.SetReference(ref); fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x),pcbnew.FromMM(y)))\n
+      \\t\\tfp.SetOrientationDegrees(rot)\n
+      \\t\\tif back: fp.SetLayerAndFlip(b.GetLayerID('B.Cu'))\n
+      \\t\\tb.Add(fp)\n
+      \\texcept Exception: return  # custom/project libs aren't installed — skip\n
+      def OUT(w,h):\n
+      \\timport pcbnew as _p\n
+      \\tfor a,c in [((0,0),(w,0)),((w,0),(w,h)),((w,h),(0,h)),((0,h),(0,0))]:\n
+      \\t\\ts=_p.PCB_SHAPE(b); s.SetShape(_p.SHAPE_T_SEGMENT); s.SetStart(_p.VECTOR2I(_p.FromMM(a[0]),_p.FromMM(a[1]))); s.SetEnd(_p.VECTOR2I(_p.FromMM(c[0]),_p.FromMM(c[1]))); s.SetLayer(b.GetLayerID('Edge.Cuts')); b.Add(s)\n
+      OUT(<board_w>, <board_h>)\n
+      P('R1','Resistor_SMD:R_0805_2012Metric', 10, 15, 0)\n
+      ... one P(...) call per footprint, using the EXACT FPID 'name' and 'at'/'rot'
+      from GOAL_METADATA's PER-FOOTPRINT PLACEMENT ...\n
+      pcbnew.Refresh()>",
   "validation_targets": { "footprint_count": <int>, "net_count": <int>,
                           "layer_count": <int>, "outline_bbox_mm": [w, h] },
   "fallback": "<simplest acceptable approximation: outline + footprints placed,
                no routing + est. score>"
 }
 
-The `full_code` MUST be valid one-line Python that runs in the pcbnew Scripting
-Console as-is. Translate each footprint placement to its own statement; never
-leave a footprint at the origin. Double-check every footprint has a SetPosition.
+The `full_code` MUST be a valid, exec'able multi-line program. Emit ONE P(...)
+call for EVERY footprint in GOAL_METADATA's PER-FOOTPRINT PLACEMENT, passing its
+exact FPID (the 'name' field, e.g. 'Resistor_SMD:R_0805_2012Metric'), 'at' x/y,
+and 'rot'. Do not abbreviate the list or leave footprints at the origin.
 """
 
 

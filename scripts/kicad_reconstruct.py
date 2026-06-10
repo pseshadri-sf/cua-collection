@@ -39,6 +39,17 @@ def run() -> int:
     # Shim the GUI hooks: GetBoard -> our loaded board; Refresh -> no-op.
     pcbnew.GetBoard = lambda _b=board: _b
     pcbnew.Refresh = lambda *_a, **_k: None
+    # FootprintLoad RAISES (not returns None) when the library path doesn't
+    # exist — i.e. custom/project footprints not in the system install. Make it
+    # return None instead so a missing footprint is skipped, not fatal, even if
+    # the agent code doesn't guard the call itself.
+    _orig_fpl = pcbnew.FootprintLoad
+    def _safe_fpl(lib, name, *a, **k):  # noqa: ANN001
+        try:
+            return _orig_fpl(lib, name, *a, **k)
+        except Exception:
+            return None
+    pcbnew.FootprintLoad = _safe_fpl
 
     ns = {"pcbnew": pcbnew}
     failures: list[str] = []
