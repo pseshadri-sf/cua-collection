@@ -84,17 +84,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ablation] [{bi}] render failed for {board.name}", flush=True)
             continue
         gname = _extract_goal_name(goal_png)
-        for model in planners:
+
+        def _eval_planner(model: str) -> dict:
+            row = {"board": board.name, "repo": meta.get("repo"),
+                   "total_components": meta.get("total_components"),
+                   "planner": model, "match_score": None, "tokens_out": None}
             try:
                 planner = FrontierPlanner(api_key=api_key, model=model, app="kicad",
                                           reasoning_effort=args.reasoning, compositional=False)
                 plan = planner.plan(goal_png, goal_name=gname)
             except Exception as exc:  # noqa: BLE001
-                plan = None
                 print(f"[ablation] [{bi}] {model} plan error: {exc}", flush=True)
-            row = {"board": board.name, "repo": meta.get("repo"),
-                   "total_components": meta.get("total_components"),
-                   "planner": model, "match_score": None, "tokens_out": None}
+                return row
             if plan and plan.get("full_code"):
                 with tempfile.TemporaryDirectory() as td:
                     traj = Path(td) / "t.json"
@@ -103,17 +104,24 @@ def main(argv: list[str] | None = None) -> int:
                          "code": plan["full_code"]}}]}))
                     ev = evaluate_kicad_run(traj, board, Path(td) / "eval")
                 s = ev["score"]
+                u = plan.get("_planner_usage") or {}
                 row.update({"match_score": s["match_score"],
                             "placement": s["footprint_placement"],
                             "nets": s["connectivity_nets"], "outline": s["outline_match"],
-                            "counts": s["count_agreement"],
-                            "matched": s["matched_footprints"],
-                            "goal_fp": s["goal_footprints"], "agent_fp": s["agent_footprints"]})
-                u = plan.get("_planner_usage") or {}
-                row["tokens_out"] = u.get("completion_tokens")
-                agg[model].append(s["match_score"])
-                if u.get("completion_tokens"):
-                    cost[model].append(u["completion_tokens"])
+                            "counts": s["count_agreement"], "matched": s["matched_footprints"],
+                            "goal_fp": s["goal_footprints"], "agent_fp": s["agent_footprints"],
+                            "tokens_out": u.get("completion_tokens")})
+            return row
+
+        # The 3 planner calls are independent I/O — run them concurrently.
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+        with ThreadPoolExecutor(max_workers=len(planners)) as ex:
+            rows = list(ex.map(_eval_planner, planners))
+        for row in rows:
+            if row["match_score"] is not None:
+                agg[row["planner"]].append(row["match_score"])
+                if row.get("tokens_out"):
+                    cost[row["planner"]].append(row["tokens_out"])
             out_f.write(json.dumps(row) + "\n"); out_f.flush()
         if (bi + 1) % 5 == 0:
             print(f"[ablation] {bi+1}/{len(boards)} boards done", flush=True)
