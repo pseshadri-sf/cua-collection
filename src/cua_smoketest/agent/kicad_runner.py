@@ -359,11 +359,15 @@ class KiCadAgentTrajectoryRunner:
         if self.planner_model:
             try:
                 from .frontier_planner import FrontierPlanner, render_plan_block
+                # compositional=False even in compositional mode: KiCad splits the
+                # plan's full_code DETERMINISTICALLY (_split_pcbnew_full_code), so
+                # the LLM Stage-2 decompose is wasted (it also failed on real
+                # boards). Skipping it saves a planner call per board.
                 planner = FrontierPlanner(api_key=self.vlm.api_key,
                                           model=self.planner_model, app="kicad",
                                           image_max_dim=self.vlm.image_max_dim,
                                           reasoning_effort=self.planner_reasoning,
-                                          compositional=self.compositional)
+                                          compositional=False)
                 plan = planner.plan(self.goal_png,
                                     goal_name=_extract_goal_name(self.goal_png))
                 if plan:
