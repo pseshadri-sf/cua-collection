@@ -98,6 +98,38 @@ is **lossy on high-footprint boards** — a `_DECOMPOSE_KICAD` prompt-tuning ite
 pipeline which works. Artifacts: `~/cua_kicad_smoketest/runs/m6/<board>/`
 (`trajectory.mp4`, `video_clean.mp4`, `build_plan.json`, `eval/eval.json`).
 
+## Full 100-board collection (4 workers)
+
+Ran all 100 staged boards through the parallel orchestrator
+(`parallel_orchestrator.py --app kicad --num-workers 4 --display-base 200`),
+flash planner, compositional off-screen-console build + clean videos. Report:
+`kicad_run_report.py` (`run_report.json`).
+
+**Status:** 100/100 succeeded (`terminated_by=agent`), 0 failed / 0 timed-out /
+0 loop-killed. **100/100 clean videos produced.**
+
+**Performance** (match_score 0–100): mean **31.0**, median **27.6**, max **66.7**.
+Distribution is **bimodal** — 41 boards in [50,70) (standard footprints,
+reconstructable) and 42 in [0,10) (custom/project footprints not in the system
+library, or pcbnew loader crashes). 46/100 boards reconstruct cleanly
+(agent_fp/goal_fp ≥ 0.5); mean footprint availability 0.43. Top boards
+(Octuplex 35/35, LabPowerSupply 53/53, ECG-Sensor 49/49) hit 66.7 — the ~67
+ceiling is the connectivity component (nets weight 25 = 0, no routing in the
+placement regime). This is the M4 footprint-availability ceiling at scale, not a
+planner-quality issue.
+
+**Speed:** wall time **66.5 min** for 100 boards on 4 workers (8-core box);
+**~40 s/board** amortized, **1.50 boards/min**; ~160 worker-seconds/board
+(per-job mean 142 s, median 143 s). 4 workers was the right level for 8 cores
+(load ≈ 7/8 under build, software-rendered pcbnew + ffmpeg).
+
+**Cost: $1.79 total, $0.018/board** (gemini-3-flash planner only — compositional
+mode never calls the VLM executor). 831k prompt tokens ($0.42) + 458k completion
+tokens ($1.37) + 100 goal images. The completion cost dominates because the
+`full_code` lists one `P(...)` call per footprint; skipping the (failed) LLM
+decompose halved the per-board planner calls. ~1.8¢/board is in the cheap regime
+(a bit above FreeCAD's ~½¢ because PCBs have far more components per asset).
+
 ## Open items (next)
 
 - **Decompose fidelity** on large boards (half-adder 70→7): tighten
