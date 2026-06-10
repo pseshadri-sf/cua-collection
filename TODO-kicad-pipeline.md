@@ -1,5 +1,12 @@
 # Adding KiCad (PCB design) to the trajectory-collection suite — Plan
 
+> **Engineering spec:** see [`SPEC-kicad-pipeline.md`](SPEC-kicad-pipeline.md) for the
+> file-level implementation spec derived from this plan. Key refinement: the
+> implementation **mirrors the FreeCAD trio, not Blender** — KiCad's Scripting
+> Console is a docked, toggling-menu panel (like FreeCAD's Python console), and
+> the FreeCAD path's console-open verification, file+`exec(open(...))` typing,
+> mm units, and reuse-live-doc idempotency all transfer directly.
+
 Status: **research/planning only — no code written yet.** Date: 2026-06-10.
 Goal: add KiCad as a third program (alongside FreeCAD + Blender) that an agent
 reconstructs step-by-step in the GUI, recorded as a trajectory video, using the
