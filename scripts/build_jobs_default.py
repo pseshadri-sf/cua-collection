@@ -15,12 +15,23 @@ import json
 
 FC_PLANNER = "google/gemini-3.1-flash-lite-preview"
 BL_PLANNER = "google/gemini-3.1-pro-preview"
+# KiCad: PCBSchemaGen shows Flash >= Pro on PCB code-gen; flash (not flash-lite)
+# for the spatial placement. A/B vs pro in M5 before locking (SPEC §9).
+KICAD_PLANNER = "google/gemini-3.1-flash-preview"
 EXECUTOR = "qwen/qwen3-vl-30b-a3b-instruct"
 
 
+def _normalize_app(app: str) -> str:
+    if app.startswith("ki") or app == "kicad":
+        return "kicad"
+    if app.startswith("bl") or app == "blender":
+        return "blender"
+    return "freecad"
+
+
 def build_extra_args(app: str, bl_best_of_both: bool = False) -> list[str]:
-    app = "blender" if app.startswith("bl") or app == "blender" else "freecad"
-    planner = BL_PLANNER if app == "blender" else FC_PLANNER
+    app = _normalize_app(app)
+    planner = {"blender": BL_PLANNER, "kicad": KICAD_PLANNER}.get(app, FC_PLANNER)
     a = ["--model", EXECUTOR, "--reasoning-effort", "low", "--image-max-dim", "1024",
          "--grounded", "--planner-model", planner, "--compositional",
          "--planner-reasoning", "low", "--postprocess"]

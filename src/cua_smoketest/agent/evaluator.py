@@ -28,6 +28,7 @@ from typing import Any
 
 FREECAD_ASSETS_DIR = Path.home() / "cua_gui_smoketest" / "assets"
 BLENDER_ASSETS_DIR = Path.home() / "cua_blender_smoketest" / "assets"
+KICAD_ASSETS_DIR = Path.home() / "cua_kicad_smoketest" / "assets"
 
 
 def _asset_from_sidecar(goal_png: Path) -> Path | None:
@@ -96,6 +97,24 @@ def resolve_blender_goal_asset(goal_png: Path) -> Path | None:
     return cand if cand.exists() else None
 
 
+def resolve_kicad_goal_asset(goal_png: Path) -> Path | None:
+    """Map a goal atlas like `A_07_loaded_<stem>.png` -> `<stem>.kicad_pcb`.
+
+    Sidecar-first (handles arbitrary procured names); the regex arm is the
+    fallback for the `A_<n>_loaded_<stem>.png` convention.
+    """
+    hit = _asset_from_sidecar(goal_png)
+    if hit:
+        return hit
+    name = goal_png.name
+    m = re.match(r"^[A-Z]_\d+_loaded_(.+)\.png$", name, re.IGNORECASE)
+    if not m:
+        return None
+    base = m.group(1)
+    cand = KICAD_ASSETS_DIR / f"{base}.kicad_pcb"
+    return cand if cand.exists() else None
+
+
 # --- code extraction -------------------------------------------------------
 
 def extract_python_chunks(trajectory_json: dict, app: str) -> list[str]:
@@ -109,7 +128,7 @@ def extract_python_chunks(trajectory_json: dict, app: str) -> list[str]:
     for step in trajectory_json.get("trajectory", []):
         a = step.get("action") or {}
         t = a.get("type")
-        if t == "python_eval":
+        if t in ("python_eval", "pcbnew_eval"):  # pcbnew_eval = KiCad code blocks
             code = a.get("code", "")
             if isinstance(code, str) and code.strip():
                 chunks.append(code)

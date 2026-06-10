@@ -31,11 +31,15 @@ from pathlib import Path
 _CROP = {
     "freecad": (320, 110, 1575, 600),   # FreeCAD 3D view (excl. tree/toolbar/console)
     "blender": (80, 92, 1410, 878),     # Blender Layout 3D viewport (excl. panels/header/timeline)
+    "kicad":   (220, 95, 1480, 820),    # pcbnew PCB canvas (excl. layers panel/toolbar/status) — M1-tuned
 }
 # Keep-window around each step's settled `action_time`: (pre, post) seconds.
 _WINDOW = {
     "freecad": (1.2, 0.8),
     "blender": (0.5, 1.2),
+    # KiCad keeps the canvas visible throughout (console is a separate panel),
+    # so use the wider FreeCAD-style window.
+    "kicad":   (1.2, 0.8),
 }
 
 
@@ -59,8 +63,13 @@ def _code_steps(traj: dict, app: str) -> list[dict]:
         if t is None:
             continue
         typ = a.get("type")
-        code = a.get("code") if typ == "python_eval" else (a.get("text") if typ == "type" else None)
-        if typ in ("python_eval", "type") and code:
+        if typ in ("python_eval", "pcbnew_eval"):
+            code = a.get("code")
+        elif typ == "type":
+            code = a.get("text")
+        else:
+            code = None
+        if typ in ("python_eval", "pcbnew_eval", "type") and code:
             out.append({"step_idx": s.get("step_idx"), "t": float(t), "code": code,
                         "rationale": s.get("rationale"),
                         "reasoning_trace": s.get("reasoning_trace")})
@@ -76,7 +85,12 @@ def postprocess_trajectory(job_dir: str | Path, app: str,
     tj = job / "trajectory.json"
     if not src.exists() or not tj.exists() or not shutil.which("ffmpeg"):
         return None
-    app = "blender" if app.startswith("bl") or app == "blender" else "freecad"
+    if app.startswith("ki") or app == "kicad":
+        app = "kicad"
+    elif app.startswith("bl") or app == "blender":
+        app = "blender"
+    else:
+        app = "freecad"
     try:
         traj = json.loads(tj.read_text())
     except Exception:

@@ -48,8 +48,12 @@ DEFAULT_EXTRA_ARGS = (
 )
 FREECAD_SCRIPT = PROJECT_ROOT / "scripts" / "agent_trajectory.py"
 BLENDER_SCRIPT = PROJECT_ROOT / "scripts" / "blender_agent_trajectory.py"
+KICAD_SCRIPT = PROJECT_ROOT / "scripts" / "kicad_agent_trajectory.py"
+APP_SCRIPTS = {"freecad": FREECAD_SCRIPT, "blender": BLENDER_SCRIPT, "kicad": KICAD_SCRIPT}
 FREECAD_GOAL_DIR = Path.home() / "cua_gui_smoketest" / "screenshots"
 BLENDER_GOAL_DIR = Path.home() / "cua_blender_smoketest" / "screenshots"
+KICAD_GOAL_DIR = Path.home() / "cua_kicad_smoketest" / "screenshots"
+APP_GOAL_DIRS = {"freecad": FREECAD_GOAL_DIR, "blender": BLENDER_GOAL_DIR, "kicad": KICAD_GOAL_DIR}
 FREECAD_ASSET_EXTS = (".FCStd", ".step", ".stp", ".iges", ".igs", ".brep", ".stl")
 BLENDER_ASSET_EXTS = (".blend",)
 
@@ -255,7 +259,7 @@ def build_worker_cmd(job: dict, slot: WorkerSlot,
     if args.worker_command:
         return shlex.split(args.worker_command)
 
-    script = FREECAD_SCRIPT if job["app"] == "freecad" else BLENDER_SCRIPT
+    script = APP_SCRIPTS.get(job["app"], FREECAD_SCRIPT)
     extra = list(job.get("extra_args") or DEFAULT_EXTRA_ARGS)
     return [
         UV_BIN, "run", "--project", str(PROJECT_ROOT),
@@ -385,7 +389,7 @@ def run_one_job(slot: WorkerSlot, job: dict, args, shutdown: threading.Event,
 
 def discover_goal_pngs(app: str) -> list[Path]:
     """Goal screenshots from prior smoketests; round-robin source for jobs."""
-    src = FREECAD_GOAL_DIR if app == "freecad" else BLENDER_GOAL_DIR
+    src = APP_GOAL_DIRS.get(app, FREECAD_GOAL_DIR)
     if not src.exists():
         return []
     return sorted(p for p in src.iterdir()
@@ -444,7 +448,8 @@ def ensure_metadata_sidecars(jobs: list[dict]) -> None:
         if sidecar.exists():
             continue
         # Auto-detect app by which screenshots dir the path lives under
-        app = "blender" if "blender" in str(gp) else "freecad"
+        sp = str(gp)
+        app = "kicad" if "kicad" in sp else ("blender" if "blender" in sp else "freecad")
         needs.append((gp, app))
     if not needs:
         return
@@ -456,16 +461,29 @@ def ensure_metadata_sidecars(jobs: list[dict]) -> None:
         sys.path.insert(0, str(src_root))
     from cua_smoketest.agent.evaluator import (  # noqa: E402
         resolve_freecad_goal_asset, resolve_blender_goal_asset,
+        resolve_kicad_goal_asset,
     )
+    resolvers = {"freecad": resolve_freecad_goal_asset,
+                 "blender": resolve_blender_goal_asset,
+                 "kicad": resolve_kicad_goal_asset}
+    # KiCad metadata is extracted by the headless kicad python (M3 arm of
+    # extract_goal_metadata.py). Until that lands, kicad sidecars come from
+    # procurement; skip extraction here gracefully rather than misrouting.
+    extract_cmds = {
+        "freecad": ["freecadcmd", str(extractor)],
+        "blender": ["blender", "-b", "-noaudio", "-P", str(extractor)],
+    }
     n_ok = n_miss = n_err = 0
     for gp, app in needs:
-        resolver = resolve_freecad_goal_asset if app == "freecad" else resolve_blender_goal_asset
+        resolver = resolvers.get(app, resolve_freecad_goal_asset)
         asset = resolver(gp)
         if not asset or not asset.exists():
             print(f"  [miss] no asset for {gp.name}"); n_miss += 1; continue
+        cmd = extract_cmds.get(app)
+        if cmd is None:
+            print(f"  [skip] {gp.name}: {app} metadata extraction is M3-pending")
+            n_miss += 1; continue
         env = {**os.environ, "META_ASSET": str(asset), "META_OUT": str(gp.with_suffix(".meta.json"))}
-        cmd = ["freecadcmd", str(extractor)] if app == "freecad" else \
-              ["blender", "-b", "-noaudio", "-P", str(extractor)]
         try:
             subprocess.run(cmd, env=env, timeout=120,
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
@@ -547,7 +565,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, required=True)
     p.add_argument("--num-jobs", type=int, default=0,
                    help="Generate this many jobs from defaults if --jobs-file omitted.")
-    p.add_argument("--app", choices=("freecad", "blender"), default="freecad")
+    p.add_argument("--app", choices=("freecad", "blender", "kicad"), default="freecad")
     p.add_argument("--jobs-file", type=Path, default=None)
     p.add_argument("--output-dir", type=Path, default=None,
                    help="default: ~/cua_gui_smoketest/runs/run_<UTC>")
@@ -821,7 +839,16 @@ def write_best_of_summary(run_dir: Path, results: list, jobs: list, n: int) -> P
     from cua_smoketest.agent.evaluator import (  # noqa: E402
         evaluate_freecad_run, evaluate_blender_run,
         resolve_freecad_goal_asset, resolve_blender_goal_asset,
+        resolve_kicad_goal_asset,
     )
+    # KiCad scoring (evaluate_kicad_run / kicad_eval) is the M3 milestone and
+    # needs KiCad installed; import it if present, else leave kicad unscored.
+    try:
+        from cua_smoketest.agent.evaluator import evaluate_kicad_run  # type: ignore
+    except ImportError:
+        evaluate_kicad_run = None
+    _RESOLVERS = {"blender": resolve_blender_goal_asset, "kicad": resolve_kicad_goal_asset}
+    _RUNNERS = {"blender": evaluate_blender_run, "kicad": evaluate_kicad_run}
     # Map base_id → list of (trial_idx, result, app, goal_path)
     jobs_by_id = {j["job_id"]: j for j in jobs}
     trials_by_base: dict[str, list] = {}
@@ -839,10 +866,10 @@ def write_best_of_summary(run_dir: Path, results: list, jobs: list, n: int) -> P
             traj = Path(r.trajectory_json_path) if r.trajectory_json_path else None
             if traj and traj.exists():
                 app = j.get("app", "freecad")
-                resolver = resolve_freecad_goal_asset if app == "freecad" else resolve_blender_goal_asset
-                runner = evaluate_freecad_run if app == "freecad" else evaluate_blender_run
-                asset = resolver(Path(j["goal_path"]))
-                if asset:
+                resolver = _RESOLVERS.get(app, resolve_freecad_goal_asset)
+                runner = _RUNNERS.get(app, evaluate_freecad_run)
+                asset = resolver(Path(j["goal_path"])) if runner else None
+                if asset and runner:
                     try:
                         edir = traj.parent / "eval"
                         ev = runner(traj, asset, edir)
