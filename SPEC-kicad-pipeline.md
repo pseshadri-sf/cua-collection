@@ -6,6 +6,32 @@ Scope of this doc: turn the plan's conclusions into a concrete, file-level
 implementation spec against the current `cua_smoketest` codebase, so the work
 can be picked up phase-by-phase without re-deriving architecture.
 
+> **Implementation status (as built, validated against KiCad 10.0.3 under Xvfb).**
+> M0–M3 are **done and verified end-to-end**: a planner→compositional run builds
+> the board live via the pcbnew console and scores **match_score 99.9** on the
+> reconstruction metric (trajectory.mp4 + clean video produced).
+> - **Harness (M1/M2):** `kicad_automation.py`, `kicad_action_space.py`,
+>   `kicad_runner.py`, `scripts/kicad_agent_trajectory.py`, planner + VLM arms.
+> - **M0 findings baked in:** pcbnew renders on Cairo/software-GL (no crash);
+>   `DisplayManager`'s openbox gives wmctrl detection; the window is **maximized**
+>   after launch; the first-run **"KiCad Setup" wizard appears every launch** and
+>   is dismissed by locating the window + clicking Cancel→Yes (KiCad is wx →
+>   synthetic `--window` keys are dropped, only real clicks/XTEST register); the
+>   **Scripting Console is a floating "KiPython" PyShell window** (not docked) —
+>   opened via Tools(318,31)→item(382,438), then moved/resized to a fixed rect,
+>   typed via click→**Ctrl+End**→type→Enter; `FootprintLoad` needs the **full
+>   `.pretty` path**; canvas centre ≈ (960,560).
+> - **M3:** `extract_goal_metadata.py` kicad arm, `kicad_reconstruct.py`,
+>   `kicad_measure.py`, `kicad_eval.py` (`compare_kicad`/`evaluate_kicad_run`),
+>   `render_kicad_goal.py` (kicad-cli svg + rsvg-convert + pcb render → PIL atlas),
+>   `procure_kicad_assets.py`; orchestrator/eval_parallel_run/postprocess/
+>   build_jobs wired. Planner id: **`google/gemini-3-flash-preview`**.
+> - **Env prereqs:** KiCad 10 (`ppa:kicad/kicad-10.0-releases`) + `kicad-footprints`
+>   + `kicad-symbols` + `libgl1-mesa-dri` + `librsvg2-bin`; pcbnew importable from
+>   the system `python3`.
+> - **Remaining:** M4 metric-weight tuning, M5 planner cost A/B, M6 scale run, and
+>   running the actual kicad-happy procurement clone (the tool is ready).
+
 This spec does **not** introduce a new pattern. It adds KiCad as a **third app**
 behind the exact seams FreeCAD and Blender already use: a per-app *automation*
 driver, an *action executor* + action-space spec, an *agentic runner*, a thin
