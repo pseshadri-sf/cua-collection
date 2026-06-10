@@ -30,6 +30,13 @@ FREECAD_ASSETS_DIR = Path.home() / "cua_gui_smoketest" / "assets"
 BLENDER_ASSETS_DIR = Path.home() / "cua_blender_smoketest" / "assets"
 KICAD_ASSETS_DIR = Path.home() / "cua_kicad_smoketest" / "assets"
 
+# KiCad PCB-reconstruction metric lives in kicad_eval (it shells out to the
+# system-python pcbnew scripts). Re-exported here so callers that dispatch on
+# app (orchestrator, eval_parallel_run) get evaluate_kicad_run uniformly.
+# kicad_eval imports extract_python_chunks from THIS module lazily, so there is
+# no import cycle.
+from .kicad_eval import compare_kicad, evaluate_kicad_run  # noqa: E402,F401
+
 
 def _asset_from_sidecar(goal_png: Path) -> Path | None:
     """If a `<goal_stem>.meta.json` sidecar exists and names a real source

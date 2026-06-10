@@ -21,15 +21,24 @@ if _SRC.exists() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from cua_smoketest.agent.evaluator import (   # noqa: E402
-    evaluate_freecad_run, evaluate_blender_run,
-    resolve_freecad_goal_asset, resolve_blender_goal_asset,
+    evaluate_freecad_run, evaluate_blender_run, evaluate_kicad_run,
+    resolve_freecad_goal_asset, resolve_blender_goal_asset, resolve_kicad_goal_asset,
 )
+
+_RESOLVERS = {"freecad": resolve_freecad_goal_asset,
+              "blender": resolve_blender_goal_asset,
+              "kicad": resolve_kicad_goal_asset}
+_RUNNERS = {"freecad": evaluate_freecad_run,
+            "blender": evaluate_blender_run,
+            "kicad": evaluate_kicad_run}
 
 
 def _route(job_id: str, goal_path: str, declared_app: str | None) -> str:
+    if "kicad_smoketest" in goal_path:
+        return "kicad"
     if "blender_smoketest" in goal_path:
         return "blender"
-    if declared_app in ("freecad", "blender"):
+    if declared_app in ("freecad", "blender", "kicad"):
         return declared_app
     if job_id.startswith(("b", "bl_")):
         return "blender"
@@ -43,8 +52,8 @@ def _eval_one(traj_path_str: str, app: str, goal_path: str, force: bool) -> dict
     if ej.exists() and not force:
         return {"job": traj.parent.name, "status": "skipped",
                 "match_score": json.loads(ej.read_text())["score"]["match_score"]}
-    resolver = resolve_freecad_goal_asset if app == "freecad" else resolve_blender_goal_asset
-    runner   = evaluate_freecad_run   if app == "freecad" else evaluate_blender_run
+    resolver = _RESOLVERS.get(app, resolve_freecad_goal_asset)
+    runner   = _RUNNERS.get(app, evaluate_freecad_run)
     asset = resolver(Path(goal_path))
     if not asset or not asset.exists():
         return {"job": traj.parent.name, "status": "no_asset", "match_score": None}
