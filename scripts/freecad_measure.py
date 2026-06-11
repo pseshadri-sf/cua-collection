@@ -89,5 +89,5 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" or "FreeCAD" in sys.modules:  # AppImage freecadcmd runs scripts with __name__=stem
     raise SystemExit(main(sys.argv))

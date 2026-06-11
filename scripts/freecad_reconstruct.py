@@ -121,5 +121,5 @@ def _measure_doc(doc) -> dict:
     }
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" or "FreeCAD" in sys.modules:  # AppImage freecadcmd runs scripts with __name__=stem
     raise SystemExit(run(sys.argv))

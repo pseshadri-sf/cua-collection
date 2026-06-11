@@ -424,7 +424,7 @@ def main_kicad() -> int:
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" or "FreeCAD" in sys.modules:  # AppImage freecadcmd runs scripts with __name__=stem
     # Auto-detect engine by which interpreter is running us:
     # blender (bpy) -> KiCad (pcbnew) -> FreeCAD (freecadcmd default).
     # META_APP can force a branch.
