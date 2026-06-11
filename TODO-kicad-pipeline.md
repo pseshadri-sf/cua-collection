@@ -1,5 +1,9 @@
 # Adding KiCad (PCB design) to the trajectory-collection suite — Plan
 
+> **Results & current state:** see [`TODO-kicad-results.md`](TODO-kicad-results.md)
+> — M0–M6 done + full 100-board collection run (100/100, 66.5 min, $1.79,
+> clean step-by-step videos), with findings, key paths, and resume commands.
+>
 > **Engineering spec:** see [`SPEC-kicad-pipeline.md`](SPEC-kicad-pipeline.md) for the
 > file-level implementation spec derived from this plan. Key refinement: the
 > implementation **mirrors the FreeCAD trio, not Blender** — KiCad's Scripting

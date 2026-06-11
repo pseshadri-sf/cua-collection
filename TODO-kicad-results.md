@@ -1,10 +1,27 @@
-# KiCad track — procurement + tuning/ablation results
+# KiCad track — procurement + tuning/ablation + full-collection results
 
-Status: **M0–M6 done.** KiCad 10.0.3 installed; full pipeline validated on 100
-real medium-difficulty boards. Date: 2026-06-10.
+Status: **M0–M6 DONE + full 100-board collection DONE.** KiCad 10.0.3 installed;
+end-to-end pipeline validated and run at scale (100 real medium boards, 4
+workers, clean step-by-step viewfinder videos). Last updated: 2026-06-11.
 
 See [`SPEC-kicad-pipeline.md`](SPEC-kicad-pipeline.md) for the design and
 [`TODO-kicad-pipeline.md`](TODO-kicad-pipeline.md) for the original plan.
+
+## TL;DR (headline numbers)
+
+| | result |
+|---|---|
+| boards collected | 100 real medium-difficulty (kicad-happy, 44–203 components) |
+| full-run outcome | **100/100 succeeded, 0 failed, 100 clean videos** |
+| performance | match_score mean **31.0** / median 27.6 / max 66.7 (bimodal — see M4) |
+| speed | **66.5 min** wall, 4 workers, ~40 s/board, 1.50 boards/min |
+| cost | **$1.79 total = $0.018/board** (gemini-3-flash planner only) |
+| planner choice | **gemini-3-flash-preview** (flash ≈ pro, confirmed) |
+| video | clean FreeCAD-style viewfinder, console off-screen, step-by-step |
+
+The mean (31.0) is dragged down by ~40% of boards whose footprints aren't in the
+system library (a data/env ceiling, NOT pipeline quality — those still produce
+clean videos). On the reconstructable half, scores cluster at 50–67.
 
 ## Procurement (100 real boards)
 
@@ -89,14 +106,36 @@ video; mean match_score 47.8.**
 
 3/4 match their headless scores closely — i.e. **the GUI compositional console
 replay places the same footprints as the direct headless build**, end-to-end
-under Xvfb, with video. The outlier is `half-adder`: its compositional
-**decompose** (Stage-2 split of `full_code` into per-step console blocks)
-abbreviated the 70-footprint build into 4 steps and only 7 footprints survived,
-vs 70/70 when the `full_code` is run directly. So the compositional *decompose*
-is **lossy on high-footprint boards** — a `_DECOMPOSE_KICAD` prompt-tuning item
-(allow more steps / forbid abbreviating the P() list), separable from the core
-pipeline which works. Artifacts: `~/cua_kicad_smoketest/runs/m6/<board>/`
-(`trajectory.mp4`, `video_clean.mp4`, `build_plan.json`, `eval/eval.json`).
+under Xvfb, with video. The outlier was `half-adder` (70→7 footprints): the
+Stage-2 **LLM decompose** abbreviated the build. This exposed two video defects,
+both since FIXED (next section). Artifacts: `~/cua_kicad_smoketest/runs/m6/<board>/`.
+
+## Clean viewfinder videos (off-screen console + deterministic split) — FIXED
+
+The first cleaned KiCad videos were a ~2 s static frame of the **console covering
+the board**. Two root causes, both fixed:
+
+1. **Console over the canvas.** KiCad's Scripting Console is a *floating* window
+   ("KiPython"), unlike FreeCAD's docked panel, so the viewport crop captured it
+   every frame. **Fix:** park the console PERMANENTLY OFF-SCREEN and type into it
+   "blind" — `xdotool windowactivate` grants keyboard focus regardless of
+   position, and XTEST keystrokes go to the focused window. The canvas is never
+   obscured; *every* frame is a clean viewfinder, no hide/show flicker.
+   (`kicad_action_space.py`: `CONSOLE_OFFSCREEN_XY`, `_submit_to_shell`.)
+2. **Whole board in ONE code block** (`n_code_blocks: 1`). The LLM decompose
+   failed on real boards, so `full_code` ran as a single `pcbnew_eval` → one
+   captured moment. **Fix:** `_split_pcbnew_full_code` (`kicad_runner.py`)
+   DETERMINISTICALLY splits the P()-helper `full_code` into a setup+outline step
+   then batches of `P()` calls (~10 steps). The console namespace persists across
+   `exec` submissions, so step 1 defines `P`/`b` and later steps call them.
+   This REPLACES the unreliable LLM decompose (also skipped now → 1 fewer planner
+   call/board). Also tightened the postprocess crop to canvas-only
+   `(345,130,1295,890)`.
+
+Result on esphome-dot (62 footprints): clean video **1 block/2.0 s → 10
+blocks/20.0 s**, board builds component-by-component, console never in frame,
+same 56/62 placement (namespace persistence confirmed). This is the video format
+used by the full 100-board run below.
 
 ## Full 100-board collection (4 workers)
 
@@ -130,22 +169,102 @@ tokens ($1.37) + 100 goal images. The completion cost dominates because the
 decompose halved the per-board planner calls. ~1.8¢/board is in the cheap regime
 (a bit above FreeCAD's ~½¢ because PCBs have far more components per asset).
 
-## Open items (next)
+## Open items (next — prioritized)
 
-- **Decompose fidelity** on large boards (half-adder 70→7): tighten
-  `_DECOMPOSE_KICAD` so every P() call is preserved across steps; or replay
-  `full_code` directly when footprint count is high and only decompose the
-  *visual* grouping.
-- **Footprint availability**: install more KiCad libraries and/or prefer boards
-  with standard footprints; a minority of boards crash the pcbnew loader.
-- **Connectivity**: teach the planner to add nets + route (lifts the nets=0
-  ceiling); routing is the deferred hard part.
+1. **Footprint availability ceiling (biggest lever).** Only ~43% of footprints
+   are loadable; this caps match_score (r=+0.97). Options: install more KiCad
+   libraries (the `kicad-footprints` pkg is the standard set; project/custom
+   footprints live in the source repos and aren't installable), OR filter
+   procurement to boards whose footprints are mostly standard, OR extend the
+   `_safe_fpl` fallback to also pull footprints embedded in the goal `.kicad_pcb`
+   itself (the footprint definitions ARE in the goal board file).
+2. **Connectivity / routing (breaks the ~67 ceiling).** `nets=0` everywhere —
+   the planner places footprints + outline but doesn't reconstruct nets/tracks.
+   Teach the planner to add nets + route (or down-weight the nets component if
+   placement-only is the intended product). Routing is the deferred hard part.
+3. **pcbnew loader crashes.** A minority of boards segfault `FootprintLoad` on a
+   specific footprint (subprocess-isolated → scored 0). Could pre-screen boards
+   by attempting a headless load during procurement and dropping crashers.
+4. ~~Decompose fidelity on large boards~~ — **DONE** via the deterministic
+   `_split_pcbnew_full_code` (replaced the lossy LLM decompose).
 
-## Tooling added this pass
+## Tooling added this pass (all committed, authored pseshadri-sf)
 
 - `procure_kicad_assets.py --catalog` — catalog-driven medium-board sourcing.
-- `kicad_plan_ablation.py` — headless planner A/B (parallelized).
+- `kicad_plan_ablation.py` — headless planner A/B (parallelized planners).
 - `kicad_metric_report.py` — ablation / metric analysis.
-- `kicad_collect.py` — M6 batch GUI collector.
-- planner `full_code` → multi-line `P()` helper; `kicad_reconstruct.py`
-  system-wide footprint fallback.
+- `kicad_collect.py` — sequential GUI collector (per-board demo).
+- `kicad_run_report.py` — performance/speed/cost report for an orchestrator run.
+- planner `full_code` → multi-line `P()` helper (`frontier_planner.py`);
+  `kicad_reconstruct.py` system-wide footprint fallback + `FootprintLoad` shim;
+  off-screen console + `_split_pcbnew_full_code` for clean step-by-step videos.
+
+---
+
+## Environment, key paths & resume commands (for revisiting)
+
+**Environment (installed this session):**
+- KiCad **10.0.3** via `ppa:kicad/kicad-10.0-releases` (Ubuntu 22.04 jammy);
+  binaries `pcbnew`, `kicad-cli`, `eeschema`; `pcbnew` importable from
+  `/usr/bin/python3` (NOT the uv venv — eval/reconstruct scripts shell out to it).
+- `kicad-footprints` + `kicad-symbols` (standard libs at
+  `/usr/share/kicad/footprints/*.pretty`), `libgl1-mesa-dri`, `librsvg2-bin`.
+- pcbnew runs under Xvfb with software GL (`LIBGL_ALWAYS_SOFTWARE=1
+  GALLIUM_DRIVER=llvmpipe`); the first-run "KiCad Setup" wizard is auto-dismissed
+  (Cancel→Yes via geometry-relative clicks — KiCad is wxWidgets, synthetic
+  `--window` keys are dropped, only real clicks/XTEST register).
+
+**Key data paths (under `~/cua_kicad_smoketest/`):**
+- `assets/*.kicad_pcb` — the 100 staged goal boards.
+- `manifest.jsonl` — per-board source repo + catalog complexity.
+- `screenshots/<stem>.png` + `.meta.json` — goal atlases + grounding sidecars.
+- `jobs_100.jsonl` — the orchestrator jobs file.
+- `runs/full100/` — the full run: `summary.json`/`.csv`, `run_report.json`,
+  `worker_*/jobs/<job_id>/` (each has `trajectory.json`, `video_clean.mp4`,
+  `build_plan.json`, `eval/eval.json`).
+- `ablation.jsonl` / `ablation_flash.jsonl` — M5 ablation data.
+- Repo seed board: `assets/kicad/_blank.kicad_pcb` (the agent builds into a copy).
+- kicad-happy index clone (if still present): `/tmp/kicad-happy-th/` (the catalog
+  is `reference/repo_catalog.json`).
+
+**Reproduce / resume (run from `/home/ubuntu/dev/init_envs_comp`, `uv run`):**
+
+```bash
+# 1) Procure N medium boards from the kicad-happy catalog (re-clone index if gone):
+#    git clone --depth 1 https://github.com/aklofas/kicad-happy-testharness /tmp/kicad-happy-th
+uv run python scripts/procure_kicad_assets.py --catalog /tmp/kicad-happy-th/reference/repo_catalog.json \
+    --limit 100 --components-lo 44 --components-hi 203 --render
+
+# 2) Render goal atlases (if not via --render). Parallel 4-way:
+cat manifest_boards.txt | xargs -P4 -I{} uv run python scripts/render_kicad_goal.py --asset {} --out screenshots/{}.png
+
+# 3) Headless planner ablation (cheap, no GUI):
+uv run python scripts/kicad_plan_ablation.py --manifest ~/cua_kicad_smoketest/manifest.jsonl \
+    --planners "google/gemini-3-flash-preview,google/gemini-3.1-flash-lite-preview,google/gemini-3.1-pro-preview" \
+    --limit 25 --out ~/cua_kicad_smoketest/ablation.jsonl
+uv run python scripts/kicad_metric_report.py --in ~/cua_kicad_smoketest/ablation.jsonl
+
+# 4) Build jobs file + run the full GUI collection (4 workers, displays :200-:203):
+#    (jobs builder is inline python in the session; extra_args from build_jobs_default.build_extra_args('kicad'))
+uv run python scripts/parallel_orchestrator.py --app kicad --num-workers 4 --display-base 200 \
+    --jobs-file ~/cua_kicad_smoketest/jobs_100.jsonl --output-dir ~/cua_kicad_smoketest/runs/full100
+
+# 5) Report performance/speed/cost:
+uv run python scripts/kicad_run_report.py --run-dir ~/cua_kicad_smoketest/runs/full100 \
+    --start-file /tmp/kicad_full100_start.txt --workers 4
+
+# Single-board GUI run (debug):
+uv run python scripts/kicad_agent_trajectory.py --goal screenshots/<stem>.png \
+    --output-dir /tmp/run --planner-model google/gemini-3-flash-preview \
+    --compositional --grounded --postprocess
+```
+
+**Gotchas to remember:**
+- `--display-base 200` to avoid collision with any other Xvfb pool (e.g. a
+  concurrent FreeCAD/Blender run uses `:100`–`:109`).
+- `FootprintLoad` needs the FULL `.pretty` path, and RAISES (not returns None)
+  on a missing lib — both handled in the `P()` helper + reconstruct shim.
+- Compositional mode never calls the VLM executor (qwen) — only the flash
+  planner. The executor model in `extra_args` is inert there.
+- The eval/reconstruct/measure scripts MUST run under `/usr/bin/python3` (has
+  `pcbnew`), not the venv — handled internally by shelling out.
