@@ -7,3 +7,9 @@ build/
 *.egg-info/
 .ruff_cache/
 .mypy_cache/
+
+# KiCad runtime artifacts (generated when pcbnew opens the seed board)
+assets/kicad/.history/
+assets/kicad/_blank.kicad_prl
+assets/kicad/_blank.kicad_pro
+assets/kicad/~*.lck
