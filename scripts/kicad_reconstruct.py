@@ -59,6 +59,29 @@ def run() -> int:
     _roots = ["/usr/share/kicad/footprints"] + _DEFAULT_EXTRA_ROOTS
     if _extra:
         _roots += [p for p in _extra.split(":") if p]
+    # Fix #3: project-embedded footprints. KIRECON_PROJECT_LIBS_ROOT points to
+    # a directory (typically a fresh shallow clone of the goal board's source
+    # repo) that we scan for .pretty subdirs OR loose .kicad_mod files (some
+    # projects ship loose modules in a `lib/` dir without the .pretty wrapper —
+    # urchin pattern). For both we register a virtual root so the agent's
+    # cached chunks resolve project libs (otter, urchin-footprints,
+    # acheron_MX_SolderMask) without modification.
+    # Coverage caveat (measured 2026-06-12): 17 low-availability boards have
+    # repos but only 4 ship usable .pretty dirs; the rest reference upstream
+    # commons (Acheron, Otter, SparkFun project variants).
+    _proj = os.environ.get("KIRECON_PROJECT_LIBS_ROOT", "")
+    if _proj and os.path.isdir(_proj):
+        # 1. any .pretty under the tree (proper KiCad layout)
+        for _ppretty in _glob.glob(_proj + "/**/*.pretty", recursive=True):
+            if os.path.isdir(_ppretty):
+                _roots.append(os.path.dirname(_ppretty))
+        # NOTE: an earlier attempt synthesised a .pretty wrapper around loose
+        # .kicad_mod files (e.g. urchin's `/lib/*.kicad_mod`) but pcbnew's SWIG
+        # FootprintLoad segfaults on legacy-format modules wrapped this way
+        # (PROPERTY_ENUM asserts in the constructor). The synthesised wrapper
+        # is therefore DISABLED; if a project ships loose mods, the agent's
+        # plan won't reach them — they'd need a separate offline-conversion
+        # pass to KiCad-7+ format first.
     # Per-nickname lookup ('LibNickname' -> '/path/to/LibNickname.pretty') and
     # per-name fallback ('R_0805' -> path of first .pretty with that footprint).
     _lib_by_nick: dict[str, str] = {}
