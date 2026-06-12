@@ -274,6 +274,22 @@ class KiCadAgentTrajectoryRunner:
             action = {"type": "pcbnew_eval", "code": st["code"]}
             res = executor.execute(action)
             time.sleep(max(res.post_action_sleep, self.post_action_delay))
+            # Fix #5: after each batch, write/refresh agent_state.json (read from
+            # the live pcbnew board via the state probe). Lets the postprocess
+            # report + later analysis detect mid-replay losses (P()-emit vs
+            # state.n ratio per step). The executor already runs the state
+            # probe inside _do_pcbnew_eval; we just persist its latest readout.
+            try:
+                _wid = os.environ.get("CUA_WORKER_ID") or f"pid{os.getpid()}"
+                state_src = Path(f"/tmp/cua_kicad_s_{_wid}.json")
+                if state_src.exists():
+                    (self.output_dir / "agent_state.json").write_text(
+                        state_src.read_text())
+                    # also keep a per-step snapshot
+                    (self.output_dir / f"agent_state_step_{i:02d}.json").write_text(
+                        state_src.read_text())
+            except (OSError, ValueError):
+                pass
             # Zoom-fit the (console-free) canvas, then DWELL so the postprocess
             # window captures a clean, settled frame of the new board state.
             try:

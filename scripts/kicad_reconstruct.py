@@ -46,21 +46,55 @@ def run() -> int:
     # many boards reference a footprint whose NAME exists in the standard KiCad
     # library under a different library nickname — if the named lib fails, search
     # all installed .pretty dirs for "<name>.kicad_mod" and load the first match.
+    # Fix #2: search EXTRA library roots beyond /usr/share. Allow caller to
+    # extend via KICAD_EXTRA_LIB_ROOTS (colon-separated). Defaults include
+    # SparkFun (covers the biggest missing-lib group: SparkFun-Resistor,
+    # -Connector, -Capacitor, -Jumper, etc. — ~1,500 occurrences across the
+    # 100-board collection).
     import glob as _glob
-    _fp_root = "/usr/share/kicad/footprints"
+    _DEFAULT_EXTRA_ROOTS = [
+        "/home/ubuntu/sparkfun-kicad/footprints",  # SparkFun official
+    ]
+    _extra = os.environ.get("KICAD_EXTRA_LIB_ROOTS", "")
+    _roots = ["/usr/share/kicad/footprints"] + _DEFAULT_EXTRA_ROOTS
+    if _extra:
+        _roots += [p for p in _extra.split(":") if p]
+    # Per-nickname lookup ('LibNickname' -> '/path/to/LibNickname.pretty') and
+    # per-name fallback ('R_0805' -> path of first .pretty with that footprint).
+    _lib_by_nick: dict[str, str] = {}
     _name_index: dict[str, str] = {}
-    for _d in _glob.glob(_fp_root + "/*.pretty"):
-        for _mod in _glob.glob(_d + "/*.kicad_mod"):
-            _name_index.setdefault(os.path.basename(_mod)[:-10], _d)  # name -> lib dir
+    for _root in _roots:
+        for _d in _glob.glob(_root + "/*.pretty"):
+            _nick = os.path.basename(_d)[:-len(".pretty")]
+            _lib_by_nick.setdefault(_nick, _d)
+            for _mod in _glob.glob(_d + "/*.kicad_mod"):
+                _name_index.setdefault(os.path.basename(_mod)[:-10], _d)
     _orig_fpl = pcbnew.FootprintLoad
 
     def _safe_fpl(lib, name, *a, **k):  # noqa: ANN001
+        # 1) try the lib path the caller asked for verbatim
         try:
             fp = _orig_fpl(lib, name, *a, **k)
             if fp is not None:
                 return fp
         except Exception:
             pass
+        # 2) try the library NICKNAME extracted from the path (e.g. caller passed
+        #    '/usr/share/kicad/footprints/SparkFun-Resistor.pretty' but the system
+        #    doesn't have it — find SparkFun-Resistor.pretty in any registered root)
+        try:
+            nick = os.path.basename(lib.rstrip("/")) if lib else ""
+            if nick.endswith(".pretty"):
+                nick = nick[:-len(".pretty")]
+            alt_lib = _lib_by_nick.get(nick)
+            if alt_lib and alt_lib != lib:
+                try:
+                    fp = _orig_fpl(alt_lib, name, *a, **k)
+                    if fp is not None:
+                        return fp
+                except Exception: pass
+        except Exception: pass
+        # 3) last-ditch: name-only fallback across all registered roots
         alt = _name_index.get(name)
         if alt:
             try:
