@@ -464,6 +464,16 @@ def _metadata_text(meta: dict[str, Any]) -> str:
             f"  PCB: footprints={kc.get('footprint_count')} nets={kc.get('net_count')} "
             f"layers={kc.get('layer_count')} outline_bbox_mm={kc.get('outline_bbox_mm')}")
         fps = kc.get("footprints") or []
+        # Fix #4 (panelization-aware planning): TESTED + REJECTED on 2026-06-12.
+        # Two variants tried on 16 panel-detected boards (paired vs fix#1):
+        #   #4a "iterate" hint:   mean Δ -4.4 (SparkFun_GNSS 32->0, PointController 77->60)
+        #   #4b "faithful" hint:  mean Δ -2.0 (urchin 49->0, +20 SparkFun_GNSS, +6.7 PointController)
+        # In both, the wins on a few panels were swamped by a single planner
+        # failure caused by the expanded prompt structure. The default code
+        # below (which matches pre-#4 behavior) is the version we ship; the
+        # detection logic remains in place as a no-op so a future, safer
+        # template (e.g. mid-board sub-table with strict format) can flip the
+        # flag without re-locating the call site.
         if fps:
             lines.append(f"  PER-FOOTPRINT PLACEMENT ({len(fps)} footprints):")
             for f in fps:
