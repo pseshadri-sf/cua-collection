@@ -75,14 +75,39 @@ def _freecad_should_escalate(meta: dict, goal_png: Path) -> tuple[bool, str]:
     return False, ""
 
 
-# KiCad rule placeholder. The 2026-06-10 100-board ablation showed flash ≈ pro
-# at 12 boards (flash 27.5 / flash-lite 23.0 / pro 27.5, 9/12 all-tie). The
-# planned smoke test will revisit on 50 boards and a stricter hardness signal
-# (footprint_count); the rule below is provisional pending that result.
+# KiCad rule (2026-06-12, 50-board paired sweep flash@low vs pro@low + decomp OFF
+# + json_repair). flash 42.3 mean / pro 46.8 mean, +4.14 paired (n=48), and 10
+# distinct boards moved >1pt (5 of those into 90+: Octuplex 100, Uno 97.5,
+# CDH_Board 96, esphome-dot 93.6, PointController 93.5). 0 regressions.
+#
+# Pro NEVER rescues the broken cluster (1/23 boards with flash<30 upgrade,
+# stuck because the planner — not the lib loader — fails on those). Pro
+# rarely changes the saturated cluster (1/12 with flash>=85). All 10 wins
+# land in the MIDDLE — boards where flash gets a usable plan and pro
+# tightens it. Structural fingerprint of that middle: enough footprints to
+# matter AND enough nets to need real connectivity planning.
+#
+# Threshold sweep on the 48 paired boards:
+#   fp>=35 AND net>=60: route 29/48 (60%), catch 10/10 upgrades, full +4.14
+#     mean lift, eliminate 19/38 wasted pro calls (~40% pro-budget savings
+#     vs always-pro).
+# Stricter thresholds (fp>=60 OR net>=90) drop captures to 6-7/10 with no
+# extra cost saving. The conjunction fp>=35 AND net>=60 is the Pareto pick.
+_KICAD_FP_MIN = 35     # exclude trivial boards (no headroom for pro to add)
+_KICAD_NET_MIN = 60    # exclude boards with no real connectivity to plan
+
+
 def _kicad_should_escalate(meta: dict, goal_png: Path) -> tuple[bool, str]:
-    """KiCad rule (provisional). Defaults to NEVER escalate until ablation
-    proves a routing pays off. Wire-in is identical to FC so we can flip the
-    rule independently."""
+    """KiCad rule: escalate to pro when the board sits in the working-middle
+    cluster — at least ~35 footprints AND ~60 nets. Avoids the broken
+    (planner-failure) cluster pro can't rescue and the saturated cluster pro
+    can't improve. Returns (escalate?, reason)."""
+    kc = meta.get("kicad") or {}
+    fps = kc.get("footprints") or []
+    fp_count = len(fps)
+    net_count = kc.get("net_count") or 0
+    if fp_count >= _KICAD_FP_MIN and net_count >= _KICAD_NET_MIN:
+        return True, f"fp={fp_count},nets={net_count}"
     return False, ""
 
 

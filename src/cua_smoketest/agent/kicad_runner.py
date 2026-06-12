@@ -211,6 +211,7 @@ class KiCadAgentTrajectoryRunner:
                  escalate_at_step: int = 0,
                  escalate_to_effort: str = "high",
                  planner_model: str | None = None,
+                 planner_escalate_model: str | None = None,
                  plan_format: str = "python_eval",
                  planner_reasoning: str = "low",
                  compositional: bool = False,
@@ -232,6 +233,7 @@ class KiCadAgentTrajectoryRunner:
         self.escalate_at_step = escalate_at_step
         self.escalate_to_effort = escalate_to_effort
         self.planner_model = planner_model
+        self.planner_escalate_model = planner_escalate_model
         self.plan_format = plan_format
 
     def _prepare_working_board(self) -> Path:
@@ -375,12 +377,22 @@ class KiCadAgentTrajectoryRunner:
         if self.planner_model:
             try:
                 from .frontier_planner import FrontierPlanner, render_plan_block
+                from .planner_router import select_planner_model  # noqa: PLC0415
+                # Rule-based hybrid routing (50-board paired sweep, 2026-06-12):
+                # escalate to pro@low when fp>=35 AND nets>=60 (the working-middle
+                # cluster). Catches all 10 boards pro can improve while skipping
+                # the broken (fp/nets too small or planner-unrescuable) and the
+                # already-saturated boards. With escalate_model=None the router
+                # always returns the default.
+                chosen, reason = select_planner_model(
+                    self.goal_png, self.planner_model,
+                    self.planner_escalate_model, "kicad")
                 # compositional=False even in compositional mode: KiCad splits the
                 # plan's full_code DETERMINISTICALLY (_split_pcbnew_full_code), so
                 # the LLM Stage-2 decompose is wasted (it also failed on real
                 # boards). Skipping it saves a planner call per board.
                 planner = FrontierPlanner(api_key=self.vlm.api_key,
-                                          model=self.planner_model, app="kicad",
+                                          model=chosen, app="kicad",
                                           image_max_dim=self.vlm.image_max_dim,
                                           reasoning_effort=self.planner_reasoning,
                                           compositional=False)
@@ -388,9 +400,13 @@ class KiCadAgentTrajectoryRunner:
                                     goal_name=_extract_goal_name(self.goal_png))
                 if plan:
                     plan_obj = plan
+                    plan["_planner_routing"] = {"chosen": chosen, "reason": reason,
+                                                "default": self.planner_model,
+                                                "escalate": self.planner_escalate_model}
                     (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))
                     plan_block = render_plan_block(plan, self.plan_format)
                     print(f"[planner] KiCad plan ready: {len(plan.get('steps', []))} steps "
+                          f"model={chosen.split('/')[-1]} ({reason}) "
                           f"compositional={self.compositional}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"[planner] KiCad skipped ({type(exc).__name__}: {exc})", flush=True)

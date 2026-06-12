@@ -59,6 +59,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-board", default=None,
                         help="Blank .kicad_pcb the agent builds into (default: "
                              "assets/kicad/_blank.kicad_pcb, else a built-in template).")
+    parser.add_argument("--planner-escalate-model", default=None,
+                        help="Rule-based hybrid planner routing: when set, the "
+                             "runner escalates working-middle boards (fp>=35 AND "
+                             "nets>=60) to this model instead of --planner-model. "
+                             "Validated +4.14 paired-mean lift on 50-board sweep "
+                             "(2026-06-12); routes ~60% of boards, catches all "
+                             "10 boards pro can improve, saves ~40% of pro budget "
+                             "vs always-pro. Recommended pair: "
+                             "--planner-model google/gemini-3-flash-preview "
+                             "--planner-escalate-model google/gemini-3.1-pro-preview")
     parser.add_argument("--planner-model", default=None,
                         help="OpenRouter model id for the one-pass frontier "
                              "planner (pcbnew layout plan for KiCad).")
@@ -104,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         escalate_to_effort=args.escalate_to_effort,
         seed_board=Path(args.seed_board) if args.seed_board else None,
         planner_model=args.planner_model,
+        planner_escalate_model=args.planner_escalate_model,
         plan_format=args.plan_format,
         planner_reasoning=args.planner_reasoning,
         compositional=args.compositional,

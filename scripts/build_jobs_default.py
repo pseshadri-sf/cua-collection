@@ -21,6 +21,10 @@ BL_PLANNER = "google/gemini-3.1-pro-preview"
 # KiCad: PCBSchemaGen shows Flash >= Pro on PCB code-gen; flash (not flash-lite)
 # for the spatial placement. A/B vs pro in M5 before locking (SPEC §9).
 KICAD_PLANNER = "google/gemini-3-flash-preview"
+# KiCad hybrid routing escalation (validated 50-board paired sweep 2026-06-12,
+# +4.14 mean lift, 10 boards moved up / 0 down). The router (planner_router._
+# kicad_should_escalate) sends boards with fp>=35 AND nets>=60 here.
+KICAD_PLANNER_ESCALATE = "google/gemini-3.1-pro-preview"
 EXECUTOR = "qwen/qwen3-vl-30b-a3b-instruct"
 
 
@@ -39,9 +43,13 @@ def build_extra_args(app: str, bl_best_of_both: bool = False) -> list[str]:
          "--grounded", "--planner-model", planner, "--compositional",
          "--planner-reasoning", "low", "--postprocess"]
     # Hybrid routing: FreeCAD escalates hard parts to pro (validated +17pt on
-    # face_count 150-500 / sprocket-gear-thread categories).
+    # face_count 150-500 / sprocket-gear-thread categories). KiCad escalates the
+    # working-middle band (fp>=35 AND nets>=60) — +4.14 paired-mean lift, 10
+    # boards moved up / 0 down on the 50-board 2026-06-12 sweep.
     if app == "freecad" and FC_PLANNER_ESCALATE:
         a += ["--planner-escalate-model", FC_PLANNER_ESCALATE]
+    if app == "kicad" and KICAD_PLANNER_ESCALATE:
+        a += ["--planner-escalate-model", KICAD_PLANNER_ESCALATE]
     if app == "blender" and bl_best_of_both:
         a.append("--best-of-both")
     return a
