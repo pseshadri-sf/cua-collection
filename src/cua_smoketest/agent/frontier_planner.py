@@ -480,6 +480,14 @@ def _metadata_text(meta: dict[str, Any]) -> str:
         # large flat tables are easier to walk through cluster-by-cluster
         # instead of all-at-once).
         decomp = kc.get("decomposition")
+        # SUBCIRCUIT CLUSTERS block is INERT at temp=0 across every model tier
+        # tested (flash@low Δ=0.00 paired, flash@medium 0.00, pro@low 0.00 — see
+        # modelscan_*.jsonl 2026-06-12). Default OFF; flip KICAD_DECOMP_ENABLED=1
+        # only to re-test (e.g. with reasoning-required builds or a future system
+        # prompt that mandates cluster-organised output). Sidecars + manifests
+        # remain in place for downstream uses (per-cluster reconstruction).
+        if os.environ.get("KICAD_DECOMP_ENABLED", "0") != "1":
+            decomp = None
         if decomp and decomp.get("clusters"):
             cs = decomp["clusters"]
             lines.append(f"")
@@ -734,11 +742,33 @@ def _extract_json(text: str) -> dict[str, Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # last-ditch: first {...} span
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
+        pass
+    # last-ditch 1: first {...} span (strict json)
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
             return json.loads(m.group(0))
-        raise
+        except json.JSONDecodeError:
+            pass
+    # last-ditch 2: json_repair on the (possibly fenced) text. Handles the
+    # common KiCad-planner failure mode: gemini emits Python inside `full_code`
+    # with unescaped quotes/backslashes/newlines that strict json.loads chokes
+    # on at chars 1-3k. Empirically ~15-30% of board×planner cells in the
+    # modelscan (2026-06-12) hit this and dropped to score=None. json_repair
+    # silently fixes the most frequent cases (unterminated strings, missing
+    # commas, smart quotes). It returns "" when unfixable — coerce to a hard
+    # parse failure in that case so callers see it as before.
+    try:
+        from json_repair import repair_json  # type: ignore[import-not-found]  # noqa: PLC0415
+        candidate = m.group(0) if m else text
+        repaired = repair_json(candidate, return_objects=True)
+        if isinstance(repaired, dict) and repaired:
+            return repaired
+    except Exception:  # noqa: BLE001
+        pass
+    # Re-raise the original strict-loads error so the caller logs the precise
+    # location (used for triage of regressions).
+    return json.loads(text)  # raises JSONDecodeError
 
 
 def _validate_plan(plan: Any) -> bool:
