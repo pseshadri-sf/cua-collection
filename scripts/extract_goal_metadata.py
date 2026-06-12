@@ -397,6 +397,35 @@ def main_kicad() -> int:
 
         layer_count = board.GetCopperLayerCount()
         net_count = max(0, board.GetNetCount() - 1)
+        # Optional: attach precomputed sub-circuit decomposition. The
+        # build_goal_metadata_sidecars.py / build_goal_metadata workflow runs
+        # decompose_kicad_asset.py and drops the manifest at
+        # `<assets_parent>/decomposed/<stem>/manifest.json`. If present, surface
+        # the clusters here (planner uses them via _metadata_text below).
+        decomp = None
+        try:
+            stem = os.path.splitext(os.path.basename(asset))[0]
+            dec_path = os.path.join(os.path.dirname(os.path.dirname(asset)),
+                                    "decomposed", stem, "manifest.json")
+            if os.path.exists(dec_path):
+                d = json.load(open(dec_path))
+                # surface a compact view: per-cluster label + bbox + refs
+                decomp = {
+                    "cluster_count": d.get("cluster_count"),
+                    "method": d.get("method"),
+                    "clusters": [
+                        {"label": c.get("label"),
+                         "footprint_count": c.get("footprint_count"),
+                         "bbox": c.get("bbox"),
+                         "refs": c.get("refs"),
+                         "key_refs": [f["ref"] for f in c.get("footprints", []) if f.get("key")],
+                         "footprints": c.get("footprints"),  # full list for planner
+                        }
+                        for c in (d.get("clusters") or [])
+                    ],
+                }
+        except Exception:
+            decomp = None
         meta = {
             "asset": asset,
             "app": "kicad",
@@ -410,10 +439,12 @@ def main_kicad() -> int:
                 "outline_bbox_mm": [w_mm, d_mm],
                 "footprints": footprints,
                 "nets": nets,
+                "decomposition": decomp,
             },
             "shape_descriptor": (
                 f"PCB: {len(footprints)} footprints, {net_count} nets, "
                 f"{layer_count} copper layers, {w_mm}x{d_mm} mm board"
+                + (f", {decomp['cluster_count']} subcircuit clusters" if decomp else "")
             ),
         }
     except Exception as exc:  # noqa: BLE001

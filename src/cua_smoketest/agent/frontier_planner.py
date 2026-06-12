@@ -474,6 +474,26 @@ def _metadata_text(meta: dict[str, Any]) -> str:
         # detection logic remains in place as a no-op so a future, safer
         # template (e.g. mid-board sub-table with strict format) can flip the
         # flag without re-locating the call site.
+        # Decomposition-aware grounding (when a precomputed subcircuit
+        # decomposition is present, surface clusters BEFORE the flat list so
+        # the planner thinks regionally — the way board engineers do — and
+        # large flat tables are easier to walk through cluster-by-cluster
+        # instead of all-at-once).
+        decomp = kc.get("decomposition")
+        if decomp and decomp.get("clusters"):
+            cs = decomp["clusters"]
+            lines.append(f"")
+            lines.append(f"  SUBCIRCUIT CLUSTERS ({len(cs)} groups, "
+                         f"identified by net+anchor clustering):")
+            for ci, c in enumerate(cs):
+                bb = c.get("bbox") or {}
+                keys = c.get("key_refs") or []
+                lines.append(
+                    f"    [#{ci:02d} {c.get('label','?'):<12}] "
+                    f"{c.get('footprint_count')} fp at "
+                    f"({bb.get('cx',0):.0f},{bb.get('cy',0):.0f}) "
+                    f"{bb.get('w',0):.0f}x{bb.get('h',0):.0f}mm  "
+                    f"keys=[{','.join(keys[:3])}]")
         if fps:
             lines.append(f"  PER-FOOTPRINT PLACEMENT ({len(fps)} footprints):")
             for f in fps:
