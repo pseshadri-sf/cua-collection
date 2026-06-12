@@ -109,6 +109,13 @@ def main(argv: list[str] | None = None) -> int:
                              "append a per-part bbox+origin table to "
                              "GOAL_METADATA so the agent can emit one build_* "
                              "per part instead of one big primitive.")
+    parser.add_argument("--planner-escalate-model", default=None,
+                        help="Rule-based dynamic planner: when set, the runner "
+                             "routes hard-band / hard-category assets to this "
+                             "model instead of --planner-model (FC: face_count "
+                             "in [150,500] or sprocket/gear/thread categories). "
+                             "Validated +17pt mean lift on hard FC parts at "
+                             "~2x cost in 833-asset baseline.")
     parser.add_argument("--planner-model", default=None,
                         help="frontier-onepass: OpenRouter model id for the "
                              "one-pass frontier planner (e.g. "
@@ -171,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         escalate_at_step=args.escalate_at_step,
         escalate_to_effort=args.escalate_to_effort,
         planner_model=args.planner_model,
+        planner_escalate_model=args.planner_escalate_model,
         plan_format=args.plan_format,
         compositional=args.compositional,
         planner_reasoning=args.planner_reasoning,

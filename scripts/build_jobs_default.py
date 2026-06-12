@@ -14,6 +14,9 @@ import argparse
 import json
 
 FC_PLANNER = "google/gemini-3.1-flash-lite-preview"
+# FreeCAD hybrid routing escalation model (used by planner_router for hard-band
+# / hard-category assets). Set to None to disable hybrid routing.
+FC_PLANNER_ESCALATE = "google/gemini-3.1-pro-preview"
 BL_PLANNER = "google/gemini-3.1-pro-preview"
 # KiCad: PCBSchemaGen shows Flash >= Pro on PCB code-gen; flash (not flash-lite)
 # for the spatial placement. A/B vs pro in M5 before locking (SPEC §9).
@@ -35,6 +38,10 @@ def build_extra_args(app: str, bl_best_of_both: bool = False) -> list[str]:
     a = ["--model", EXECUTOR, "--reasoning-effort", "low", "--image-max-dim", "1024",
          "--grounded", "--planner-model", planner, "--compositional",
          "--planner-reasoning", "low", "--postprocess"]
+    # Hybrid routing: FreeCAD escalates hard parts to pro (validated +17pt on
+    # face_count 150-500 / sprocket-gear-thread categories).
+    if app == "freecad" and FC_PLANNER_ESCALATE:
+        a += ["--planner-escalate-model", FC_PLANNER_ESCALATE]
     if app == "blender" and bl_best_of_both:
         a.append("--best-of-both")
     return a

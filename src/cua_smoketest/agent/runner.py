@@ -239,6 +239,7 @@ class AgentTrajectoryRunner:
                  # guidance every turn. plan_format picks the downstream
                  # rendering ("python_eval" default, or "build_star").
                  planner_model: str | None = None,
+                 planner_escalate_model: str | None = None,
                  plan_format: str = "python_eval",
                  planner_reasoning: str = "low",
                  compositional: bool = False,
@@ -266,6 +267,7 @@ class AgentTrajectoryRunner:
         self.escalate_at_step = escalate_at_step
         self.escalate_to_effort = escalate_to_effort
         self.planner_model = planner_model
+        self.planner_escalate_model = planner_escalate_model
         self.plan_format = plan_format
 
     def _run_compositional(self, plan, executor, capture, shots_dir, steps, t0,
@@ -373,8 +375,17 @@ class AgentTrajectoryRunner:
         plan_obj = None
         if self.planner_model:
             try:
+                # Rule-based dynamic routing: pick the cheap default OR the
+                # escalation model based on the goal's metadata (face_count
+                # band + hard-category match). See planner_router.py for the
+                # rule. With escalate_model=None the router always returns the
+                # default (backwards-compatible).
+                from .planner_router import select_planner_model  # noqa: PLC0415
+                chosen, reason = select_planner_model(
+                    self.goal_png, self.planner_model,
+                    self.planner_escalate_model, "freecad")
                 planner = FrontierPlanner(
-                    api_key=self.vlm.api_key, model=self.planner_model,
+                    api_key=self.vlm.api_key, model=chosen,
                     image_max_dim=self.vlm.image_max_dim,
                     reasoning_effort=self.planner_reasoning,
                     compositional=self.compositional)
@@ -382,10 +393,14 @@ class AgentTrajectoryRunner:
                                     goal_name=_extract_goal_name(self.goal_png))
                 if plan:
                     plan_obj = plan
+                    plan["_planner_routing"] = {"chosen": chosen, "reason": reason,
+                                                "default": self.planner_model,
+                                                "escalate": self.planner_escalate_model}
                     (self.output_dir / "build_plan.json").write_text(json.dumps(plan, indent=2))
                     plan_block = render_plan_block(plan, self.plan_format)
                     print(f"[planner] plan ready: {len(plan.get('steps', []))} steps, "
-                          f"format={self.plan_format} compositional={self.compositional}", flush=True)
+                          f"format={self.plan_format} compositional={self.compositional} "
+                          f"model={chosen.split('/')[-1]} ({reason})", flush=True)
             except Exception as exc:  # noqa: BLE001 — never block the run on planning
                 print(f"[planner] skipped ({type(exc).__name__}: {exc})", flush=True)
 
