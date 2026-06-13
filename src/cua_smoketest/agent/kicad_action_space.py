@@ -348,7 +348,14 @@ class KiCadActionExecutor:
         grant keyboard focus (works off-screen), Ctrl+End to reach the prompt
         (past the startup banner), type via XTEST (delivered to the focused
         window regardless of position), Enter. No click — the console is
-        off-screen, so the canvas is never obscured."""
+        off-screen, so the canvas is never obscured.
+
+        After submit, re-park the console: KiPython's PyShell auto-resizes /
+        scrolls-to-bottom on output, which on some sessions pulls the window
+        back on-screen and covers the canvas in the captured video. Verified on
+        5 demo runs (2026-06-13): Octuplex / Uno / PointController showed the
+        console flooding the viewport mid-replay despite a clean off-screen
+        park at startup. Re-placing after every submit keeps it gone."""
         wid = self._find_console_window()
         if wid:
             self._xdo("windowactivate", "--sync", wid)
@@ -358,6 +365,9 @@ class KiCadActionExecutor:
         self._pg.typewrite(line, interval=0.008)
         time.sleep(0.2)
         self._pg.press("enter")
+        # Re-park before the canvas repaint window so the recording is clean.
+        if wid:
+            self._place_console(wid)
 
     def _do_pcbnew_eval(self, a: dict) -> ExecutionResult:
         """Atomic: open console (idempotent) + run code (via file+exec) + refresh
