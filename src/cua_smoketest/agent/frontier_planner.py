@@ -253,7 +253,7 @@ OUTPUT: a single JSON object, no prose outside it, matching this schema:
       \\t\\tif fp is None: return\n
       \\t\\tfp.SetReference(ref); fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x),pcbnew.FromMM(y)))\n
       \\t\\tfp.SetOrientationDegrees(rot)\n
-      \\t\\tif back: fp.SetLayerAndFlip(b.GetLayerID('B.Cu'))\n
+      \\t\\tif back: fp.SetLayer(b.GetLayerID('B.Cu'))  # SetLayerAndFlip crashes pcbnew SWIG\n
       \\t\\tb.Add(fp)\n
       \\texcept Exception: return  # custom/project libs aren't installed — skip\n
       def OUT(w,h):\n
