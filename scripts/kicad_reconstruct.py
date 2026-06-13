@@ -82,16 +82,59 @@ def run() -> int:
         # is therefore DISABLED; if a project ships loose mods, the agent's
         # plan won't reach them — they'd need a separate offline-conversion
         # pass to KiCad-7+ format first.
-    # Per-nickname lookup ('LibNickname' -> '/path/to/LibNickname.pretty') and
-    # per-name fallback ('R_0805' -> path of first .pretty with that footprint).
+    # Per-nickname lookup ('LibNickname' -> '/path/to/LibNickname.pretty').
+    #
+    # Two classes of segfault we have to defend against (proved via NerdNOS
+    # reproducer on 2026-06-13, rc=139 inside pcbnew SWIG):
+    #
+    # 1. Name-fallback (removed): the earlier shim built a per-name index by
+    #    globbing ~16k *.kicad_mod files and added a third fallback layer. With
+    #    it present, reconstruct crashed silently and the agent board was
+    #    never saved; with it removed the same chunk runs cleanly to 42/48
+    #    footprints placed. The fallback covered a thin tail (boards that
+    #    specified just a name with the wrong lib) and was the cause of the
+    #    "broken cluster" of 22 boards stuck at score=0 on the 50-board sweep.
+    #
+    # 2. Risky .pretty dirs: not just legacy `(module` format, but ALSO some
+    #    modern `(footprint`-format dirs (e.g. NerdNOS's bitaxe.pretty) whose
+    #    files crash pcbnew SWIG on load. The crash is non-deterministic and
+    #    file-internal. Cheap text inspection can't distinguish them; the only
+    #    reliable test is to actually attempt a FootprintLoad. We probe each
+    #    new .pretty candidate by trying the first .kicad_mod in a SACRIFICIAL
+    #    SUBPROCESS — if the probe segfaults (rc not 0), skip the whole dir.
+    #
+    # System dirs (/usr/share + SparkFun) are TRUSTED (validated by upstream)
+    # so we register them without probing — saves ~200 fork()/exec()s on every
+    # reconstruct.
+    # Simple legacy detector: skip .pretty whose first *.kicad_mod is the
+    # KiCad 5 `(module ...)` form (SWIG asserts on those). NOT exhaustive —
+    # some modern `(footprint ...)` dirs (e.g. NerdNOS's bitaxe.pretty) also
+    # segfault on load, but we can't detect those without an in-process probe,
+    # and a subprocess probe inherits the corrupted pcbnew state. The
+    # ablation calls reconstruct in its own subprocess, so a crash here just
+    # drops that one board to score=0 — the same behaviour as before any of
+    # this rescue work, only without the silent name-fallback corruption.
+    def _is_legacy_pretty(d: str) -> bool:
+        mods = _glob.glob(d + "/*.kicad_mod")
+        if not mods:
+            return False
+        try:
+            with open(mods[0], "rb") as fh:
+                return fh.read(12).lstrip().startswith(b"(module")
+        except OSError:
+            return True
     _lib_by_nick: dict[str, str] = {}
-    _name_index: dict[str, str] = {}
+    _skipped_legacy: list[str] = []
     for _root in _roots:
         for _d in _glob.glob(_root + "/*.pretty"):
+            if _is_legacy_pretty(_d):
+                _skipped_legacy.append(_d)
+                continue
             _nick = os.path.basename(_d)[:-len(".pretty")]
             _lib_by_nick.setdefault(_nick, _d)
-            for _mod in _glob.glob(_d + "/*.kicad_mod"):
-                _name_index.setdefault(os.path.basename(_mod)[:-10], _d)
+    if _skipped_legacy:
+        print(f"[reconstruct] skipped {len(_skipped_legacy)} legacy-format .pretty",
+              file=sys.stderr)
     _orig_fpl = pcbnew.FootprintLoad
 
     def _safe_fpl(lib, name, *a, **k):  # noqa: ANN001
@@ -117,13 +160,6 @@ def run() -> int:
                         return fp
                 except Exception: pass
         except Exception: pass
-        # 3) last-ditch: name-only fallback across all registered roots
-        alt = _name_index.get(name)
-        if alt:
-            try:
-                return _orig_fpl(alt, name, *a, **k)
-            except Exception:
-                return None
         return None
     pcbnew.FootprintLoad = _safe_fpl
 
